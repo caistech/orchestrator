@@ -56,6 +56,21 @@ export interface SweepRule {
    */
   confirmAtSource: boolean;
 
+  /**
+   * Is this a COMMERCIAL electronic message under the Spam Act 2003?
+   *
+   * This is a legal classification, not a tone one, and getting it wrong in either direction is
+   * expensive. Commercial mail (promoting goods or services — reawakening a quiet client, chasing a
+   * cold lead) requires consent, identification AND a working unsubscribe. Transactional mail about
+   * an existing dealing (their own overdue invoice, a quote they asked for, a certificate expiring
+   * under a contract they signed) is not commercial and may omit the unsubscribe — but still carries
+   * the identification footer.
+   *
+   * Marking everything commercial is not the "safe" option: it puts an unsubscribe link on a debt
+   * notice, which invites a customer to opt out of being told they owe money.
+   */
+  commercial: boolean;
+
   /** One line the human sees in the review queue. Kept here so the flow owns its own words. */
   template: (e: SweepEntity) => { summary: string; body: string };
 }
@@ -102,6 +117,7 @@ export const RULES: SweepRule[] = [
       { kind: 'below', column: 'days_overdue', value: 60 },
     ],
     action: 'debt.chase',
+    commercial: false,
     spendAttribute: 'amount',
     confirmAtSource: true,
     template: (e) => ({
@@ -117,6 +133,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'invoice',
     thresholds: [{ kind: 'atLeast', column: 'days_overdue', value: 60 }],
     action: 'debt.escalate',
+    commercial: false,
     spendAttribute: 'amount',
     confirmAtSource: true,
     template: (e) => ({
@@ -132,6 +149,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'contact',
     thresholds: [{ kind: 'olderThan', column: 'last_contacted_at', interval: '14 days' }],
     action: 'lead.chase',
+    commercial: true,
     confirmAtSource: true,
     template: (e) => ({
       summary: `Follow up ${e.display_name} — quiet since last contact`,
@@ -144,6 +162,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'quote',
     thresholds: [{ kind: 'olderThan', column: 'last_contacted_at', interval: '7 days' }],
     action: 'quote.followup',
+    commercial: false,
     spendAttribute: 'amount',
     confirmAtSource: true,
     template: (e) => ({
@@ -157,6 +176,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'subcontractor',
     thresholds: [{ kind: 'within', column: 'expires_on', interval: '30 days' }],
     action: 'compliance.expiry',
+    commercial: false,
     // We hold this ourselves — there is no source system to confirm against.
     confirmAtSource: false,
     template: (e) => ({
@@ -172,6 +192,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'sku',
     thresholds: [{ kind: 'jsonBelow', a: 'on_hand', b: 'minimum' }],
     action: 'stock.reorder',
+    commercial: false,
     spendAttribute: 'reorder_value',
     confirmAtSource: true,
     template: (e) => ({
@@ -185,6 +206,7 @@ export const RULES: SweepRule[] = [
     entityKind: 'account',
     thresholds: [{ kind: 'olderThan', column: 'last_contacted_at', interval: '6 months' }],
     action: 'client.reawaken',
+    commercial: true,
     confirmAtSource: true,
     template: (e) => ({
       summary: `Reawaken ${e.display_name} — no activity in 6 months`,

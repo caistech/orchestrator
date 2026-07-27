@@ -242,7 +242,10 @@ export async function sweep(opts: SweepOptions): Promise<SweepReport> {
           kind: 'email.send',
           connector: 'resend',
           idempotency_key: intentId,
-          request: { to: row.email, subject: summary, body },
+          // `commercial` travels ON THE EFFECT rather than being re-derived at send time. The
+          // connector must not have to look up which rule produced a row to know whether the Spam
+          // Act applies — that lookup is the kind that gets skipped during a refactor.
+          request: { to: row.email, subject: summary, body, commercial: rule.commercial },
         });
         report.emitted += 1;
         report.outcomes.push({ flow: rule.flow, entity: row.display_name, verdict: 'emitted', band: decision.band, detail: decision.why });

@@ -4,13 +4,36 @@ import { NextResponse } from 'next/server';
 
 export const runtime = 'nodejs';
 
+/**
+ * Constrain `next` to a path on THIS site.
+ *
+ * Without this it was an open redirect: `next=https://evil.example.com/pwn` and the protocol-
+ * relative `next=//evil.example.com` both produced a Location header pointing at the attacker.
+ * It fired only on a CORRECT secret, which makes it sound minor and is precisely what makes it
+ * useful — the victim sees our real login, authenticates successfully, and lands somewhere else
+ * with the visit laundered through a domain they trust.
+ *
+ * `new URL(next, request.url)` does not help: that is what resolves an absolute or protocol-
+ * relative value straight back to the foreign origin.
+ *
+ * Rule: exactly one leading slash, and no backslash (browsers normalise `/\evil.com` to `//evil.com`).
+ * Anything else falls back to /queue rather than being repaired — a `next` we do not recognise is
+ * one we should not follow.
+ */
+function safeNext(raw: FormDataEntryValue | null): string {
+  const value = String(raw ?? '').trim();
+  if (!value.startsWith('/')) return '/queue';   // absolute URLs, scheme-relative, anything odd
+  if (value.startsWith('//') || value.startsWith('/\\')) return '/queue';  // protocol-relative
+  return value;
+}
+
 export async function POST(request: Request) {
   const expected = process.env.ORCHESTRATOR_SECRET;
   if (!expected) return NextResponse.json({ error: 'not configured' }, { status: 503 });
 
   const form = await request.formData();
   const supplied = String(form.get('secret') ?? '');
-  const next = String(form.get('next') ?? '/queue');
+  const next = safeNext(form.get('next'));
 
   // Constant-ish comparison: length check first, then a full scan that does not early-exit.
   let ok = supplied.length === expected.length;

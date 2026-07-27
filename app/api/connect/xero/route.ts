@@ -23,19 +23,22 @@ export const dynamic = 'force-dynamic';
 // Overridable, because which scopes an app may request is a property of the APP registration, not of
 // this code — and discovering that costs a failed consent round trip each time.
 //
-// Measured against the R&D-Tax app on 2026-07-28 by probing the authorize endpoint scope by scope:
-//   accounting.contacts / .read      accepted
-//   accounting.settings.read         accepted
-//   accounting.transactions / .read  REJECTED  ← invoices live here
-//   accounting.reports.read          REJECTED
+// XERO IS MID-MIGRATION FROM BROAD SCOPES TO GRANULAR ONES, and that is the whole story behind the
+// invalid_scope failure. Apps created after 2 March 2026 get ONLY the granular scopes; apps created
+// before keep the broad ones until September 2027. So the correct scope name now depends on when the
+// app was registered, which is not something the code can infer.
 //
-// So that app cannot serve this connector, and there is no workaround: contacts alone cannot say
-// what is overdue. (It also means R&D-Tax's own integration cannot work — it requests
-// accounting.transactions.read from an app that rejects it.) Either the transactions scope is added
-// to that registration, or the orchestrator gets its own app — which it should have anyway.
+// `accounting.transactions` is BROAD and has no granular equivalent by that name — invoices moved to
+// `accounting.invoices`. Probing the authorize endpoint scope by scope made the split visible:
+//   accounting.contacts / .read       accepted   (exists in BOTH schemes)
+//   accounting.settings.read          accepted   (exists in both)
+//   accounting.transactions / .read   REJECTED   (broad only)
+//   accounting.reports.read           REJECTED   (broad only; granular is reports.<name>.read)
+//
+// Same cause makes R&D-Tax's integration unusable: it asks a post-March app for a pre-March scope.
 const SCOPES =
   process.env.XERO_SCOPES ??
-  'openid profile email accounting.transactions.read accounting.contacts.read offline_access';
+  'openid profile email accounting.invoices.read accounting.contacts.read offline_access';
 
 export async function GET(request: Request) {
   const clientId = process.env.XERO_CLIENT_ID;

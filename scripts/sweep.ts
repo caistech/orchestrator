@@ -8,7 +8,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
-import { sweep } from '../src/sweeper.js';
+import { sweep } from '../src/sweeper';
 
 const SEED_TENANT = '00000000-0000-4000-a000-000000000001';
 

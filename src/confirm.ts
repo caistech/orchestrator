@@ -15,7 +15,7 @@
 // the reason. Degrade, don't fake (DATA_STANDARD R4). Treating unreachable as "probably fine" would
 // give back the entire guarantee the moment a vendor has an outage.
 
-import type { SweepEntity } from './rules.js';
+import type { SweepEntity } from './rules';
 
 export interface ConfirmResult {
   /** True when the source agrees the trigger still holds and an effect may be emitted. */

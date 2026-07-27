@@ -9,7 +9,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
-import { drainEmailOutbox } from '../src/connectors/email.js';
+import { drainEmailOutbox } from '../src/connectors/email';
 
 const SEED_TENANT = '00000000-0000-4000-a000-000000000001';
 

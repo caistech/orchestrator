@@ -6,3 +6,5 @@ node_modules/
 .context/
 dist/
 *.log
+.next/
+next-env.d.ts

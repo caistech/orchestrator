@@ -14,9 +14,9 @@
 // a duplicate-chasing bug would otherwise be introduced.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { RULES, type SweepEntity, type SweepRule, type Threshold } from './rules.js';
-import { resolveBand, type DelegationPolicy, type GateDecision } from './gate.js';
-import { DevSourceConfirmer, confirmerFor, type SourceConfirmer } from './confirm.js';
+import { RULES, type SweepEntity, type SweepRule, type Threshold } from './rules';
+import { resolveBand, type DelegationPolicy, type GateDecision } from './gate';
+import { DevSourceConfirmer, confirmerFor, type SourceConfirmer } from './confirm';
 
 export interface SweepOutcome {
   flow: string;

@@ -25,6 +25,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createEmailSender } from '@caistech/email-send';
+import { notifyCaller } from '../callback';
 import type { SenderIdentity } from '@caistech/email-compliance';
 
 export interface DrainOptions {
@@ -167,6 +168,18 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
         task_id: row.task_id, event: 'executed', detail: { provider_id: result.id, to: realTo },
       });
 
+      // Tell the caller it actually went. This is the moment Kira can say "that's gone out" —
+      // fail-soft, because the mail has already left and losing the notification must not make a
+      // successful send look failed.
+      await notifyCaller({
+        tenantId,
+        taskGroupId: row.task_id,
+        status: 'done',
+        event: 'executed',
+        summary: subject,
+        detail: { to: realTo, provider_id: result.id ?? null },
+      });
+
       report.sent += 1;
       report.details.push({ subject, outcome: 'SENT', detail: `id ${result.id ?? '(none)'} → ${realTo}` });
     } catch (e) {
@@ -179,6 +192,15 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
         .eq('id', row.id);
       await supabase.from('tasks').update({ status: 'failed' }).eq('id', row.task_id);
       await supabase.from('task_events').insert({ task_id: row.task_id, event: 'failed', detail: { error: message } });
+
+      await notifyCaller({
+        tenantId,
+        taskGroupId: row.task_id,
+        status: 'failed',
+        event: 'failed',
+        summary: subject,
+        detail: { error: message.slice(0, 200) },
+      });
 
       report.failed += 1;
       report.details.push({ subject, outcome: 'FAILED', detail: message.slice(0, 120) });

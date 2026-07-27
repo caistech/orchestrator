@@ -91,3 +91,31 @@ npm run xero:sync                            # pull GBA invoices into entities
 ```
 
 Migrations apply via the Supabase Management API (`~/.supabase-token`), never a blind `db push`.
+
+## THE SEAM IS CONNECTED AND PROVEN (2026-07-28, late)
+
+Kira now calls this orchestrator, and this orchestrator calls back.
+
+- `GET /v1/tasks/:id` — the poll leg, for a caller that cannot receive a push.
+- `src/callback.ts` `notifyCaller` — the push leg, fired by the email connector on **send AND
+  failure**. Fail-soft: the mail has already left, so a down caller must never make a successful
+  send look failed. Uses `CALLBACK_URL` + `CALLBACK_SECRET`, a **separate** secret from the inbound
+  one — inbound proves the caller to us, this proves us to the caller, and one shared value would
+  let either side's leaked env forge completions.
+- Kira's half: `lib/kira/swarm/orchestrator-adapter.ts` + `/api/kira/webhooks/task-events`.
+
+**Harness: `kira/scripts/test-task-loop.mjs`, 10/10 against production.** Asserts the negatives —
+no secret, wrong secret, forged callback, unsigned poll all refused — because a happy-path-only test
+would pass straight through a silent failure. Verified the completion landed in `kira_tasks`, not
+merely that it returned 200.
+
+⚠️ **Kira's `KIRA_SWARM_ADAPTER` is deliberately unset**, so production Kira still uses its local
+stub. The wire is proven; routing a real owner through it is a separate decision.
+
+## TODO — the agent builder (operator, 2026-07-28)
+
+When a task or flow arrives that **no existing agent can do**, the system needs to spin one up.
+`unroutable_requests` is already the input: it exists so what could not be routed is recorded rather
+than dropped, and ORCHESTRATOR_SPEC §5 calls it the source of truth for where the real decomposition
+boundaries are. **That table is the agent builder's backlog** — the phrases in it are the flows the
+registry does not yet cover. Maps to Seam 4 in Kira's `docs/GARETH_SHAH_INTEGRATION_SEAMS.md`.

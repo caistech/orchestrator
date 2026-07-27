@@ -245,7 +245,30 @@ CREATE TABLE IF NOT EXISTS unroutable_requests (
 );
 
 -- ─────────────────────────────────────────────────────────────────────────────
--- 3. updated_at
+-- 3. RLS — on every table, no exceptions (CLAUDE.md; DATA_STANDARD S2)
+-- ─────────────────────────────────────────────────────────────────────────────
+-- This is a service-role backend today, which is exactly the argument people use for skipping RLS
+-- and exactly why it gets skipped until the day something else connects. The store holds a real
+-- business's contact PII and financial positions — tenant zero is Global Buildtech Australia, whose
+-- Xero data lands in `entities` — so an un-gated table is a live exposure, not a theoretical one.
+--
+-- Deny-by-default: enabling RLS with NO policy means nothing but the service role can read or write.
+-- Per-tenant read policies get added alongside the review-queue UI, when there is an authenticated
+-- human to scope them to; adding them now would be guessing at a session shape that does not exist.
+
+ALTER TABLE tenants             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entities            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_aliases      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks               ENABLE ROW LEVEL SECURITY;
+ALTER TABLE task_events         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE effects             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE drafts              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE approvals           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE delegation_policy   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE unroutable_requests ENABLE ROW LEVEL SECURITY;
+
+-- ─────────────────────────────────────────────────────────────────────────────
+-- 4. updated_at
 -- ─────────────────────────────────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION touch_updated_at()
 RETURNS trigger LANGUAGE plpgsql AS $$

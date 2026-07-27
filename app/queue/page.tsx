@@ -12,6 +12,7 @@
 
 import { serviceClient, SEED_TENANT } from '@/lib/supabase';
 import { decide } from './actions';
+import { ConfirmSend } from './ConfirmSend';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,17 +64,16 @@ export default async function Queue() {
                 to {d?.recipients?.[0] ?? '(no recipient)'} — held because {t.payload?.why ?? 'policy'}
               </div>
               <div className="body">{d?.body ?? '(no draft)'}</div>
-              <form action={decide} className="inline">
-                <input type="hidden" name="taskId" value={t.id} />
-                {/* Approve is the affirmative act; discard is the default-safe one, so approve is
-                    the button that must be chosen deliberately rather than the one nearest the cursor. */}
-                <button className="primary" name="approve" value="true" type="submit">
-                  Approve and send
-                </button>
-                <button name="approve" value="false" type="submit">
-                  Discard
-                </button>
-              </form>
+              {/* Consequence before the click (§9). An approved send leaves the building and cannot
+                  be recalled, so the confirm names the RECIPIENT — the detail that actually catches a
+                  mistake. "Are you sure?" catches nothing; "send this to karen@… ?" catches the row
+                  you did not mean to be on. */}
+              <ConfirmSend
+                taskId={t.id}
+                recipient={d?.recipients?.[0] ?? null}
+                summary={t.summary ?? 'this message'}
+                action={decide}
+              />
             </article>
           );
         })

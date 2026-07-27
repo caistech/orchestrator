@@ -18,3 +18,53 @@ input { font:inherit; min-height:44px; width:100%; padding:.55rem .75rem; border
 form.inline { display:flex; gap:.6rem; flex-wrap:wrap; }
 .empty { color:var(--mut); border:1px dashed var(--line); border-radius:10px; padding:2rem; text-align:center; }
 a { color:var(--acc); }
+
+/* ── Operator chrome (PRODUCT_STANDARDS §4) ─────────────────────────────────── */
+.app-shell { display: flex; min-height: 100vh; }
+.app-main  { flex: 1; min-width: 0; }
+
+.operator-nav {
+  width: 15rem; flex: 0 0 15rem; border-right: 1px solid var(--line);
+  display: flex; flex-direction: column; padding: 1rem .75rem;
+  position: sticky; top: 0; height: 100vh;
+}
+.nav-brand { font-weight: 700; padding: .35rem .6rem 1rem; letter-spacing: -.01em; }
+.nav-links { display: flex; flex-direction: column; gap: .25rem; }
+.nav-foot  { margin-top: auto; display: flex; flex-direction: column; gap: .25rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.nav-who   { font-size: .78rem; color: var(--mut); padding: .5rem .6rem .75rem; overflow-wrap: anywhere; }
+
+.nav-item {
+  display: block; padding: .6rem; border-radius: 8px; text-decoration: none;
+  color: var(--fg); min-height: 44px;           /* §1 touch target */
+}
+.nav-item:hover { background: color-mix(in srgb, var(--acc) 10%, transparent); }
+.nav-item--active { background: color-mix(in srgb, var(--acc) 16%, transparent); font-weight: 600; }
+.nav-label { display: block; font-size: 1rem; }
+.nav-hint  { display: block; font-size: .75rem; color: var(--mut); margin-top: .1rem; }
+
+.nav-signout {
+  width: 100%; text-align: left; min-height: 44px; padding: .6rem;
+  border: 1px solid var(--line); border-radius: 8px; background: transparent;
+  color: var(--fg); font: inherit; cursor: pointer;
+}
+.nav-signout:hover { border-color: var(--acc); color: var(--acc); }
+
+.nav-toggle { display: none; }
+.nav-scrim  { display: none; }
+
+@media (max-width: 860px) {
+  .app-shell { display: block; }
+  /* A labelled button, not a bare hamburger — see the note in OperatorNav. */
+  .nav-toggle {
+    display: inline-block; position: fixed; top: .75rem; right: .75rem; z-index: 60;
+    min-height: 44px; min-width: 64px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); font: inherit;
+  }
+  .operator-nav {
+    position: fixed; inset: 0 auto 0 0; z-index: 55; width: 17rem; height: 100vh;
+    background: var(--bg); transform: translateX(-100%); transition: transform .18s ease;
+  }
+  .operator-nav--open { transform: none; }
+  .nav-scrim { display: block; position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.35); }
+  main { padding-top: 3.75rem; }
+}

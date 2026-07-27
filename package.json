@@ -1,0 +1,19 @@
+{
+  "name": "@caistech/orchestrator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Decides what should happen and who must approve it, across the 140-flow registry.",
+  "scripts": {
+    "sweep": "tsx scripts/sweep.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

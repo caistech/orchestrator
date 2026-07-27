@@ -109,6 +109,16 @@ WHERE source_id = 'INV-1001' AND tenant_id = '00000000-0000-4000-a000-0000000000
 -- Delegation policy — conservative starting figures, as tenant config (TASK_REGISTRY §7, §8.1).
 -- These numbers are a starting point, not a finding. They get moved the first time a real owner
 -- says the queue is too noisy or too quiet.
+--
+-- The band for each action follows the registry's OWN Gate column, not intuition: 45 (chase a
+-- 30-day account) is `N`, 46 (escalate 60/90) is `S`. That split looks odd until you count — a
+-- routine 30-day reminder fires several times a week and gating it is how the queue dies, while an
+-- escalation names a deadline and is a different conversation with the same customer.
+--
+-- The first sweep run had five of seven actions falling through to "not in any band", which the
+-- gate correctly defaulted to ask. Safe, but it meant the policy was governing almost nothing —
+-- exactly the over-gating §7 warns about, arrived at by omission rather than by decision. An action
+-- a rule can emit and the policy has never heard of is a gap, not a default.
 -- ─────────────────────────────────────────────────────────────────────────────
 
 INSERT INTO delegation_policy (tenant_id, version, bands, reserved)
@@ -116,11 +126,13 @@ VALUES ('00000000-0000-4000-a000-000000000001', 1,
   '{
     "notify": {
       "why": "no money, no commitment, reversible — high volume, and gating these kills the queue",
-      "actions": ["appointment.confirm","review.request","satisfaction.check","dispatch.notify","internal.announce"]
+      "actions": ["appointment.confirm","review.request","satisfaction.check","dispatch.notify",
+                  "internal.announce","debt.chase","quote.followup","compliance.expiry"]
     },
     "approve_before_send": {
       "why": "reaches a customer and commits us to something",
-      "actions": ["quote.send","invoice.send","debt.escalate","discount.offer","contract.send"]
+      "actions": ["quote.send","invoice.send","debt.escalate","discount.offer","contract.send",
+                  "lead.chase","client.reawaken"]
     },
     "approve_before_start": {
       "why": "money leaves",

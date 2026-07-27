@@ -36,6 +36,12 @@ export const dynamic = 'force-dynamic';
 //   accounting.reports.read           REJECTED   (broad only; granular is reports.<name>.read)
 //
 // Same cause makes R&D-Tax's integration unusable: it asks a post-March app for a pre-March scope.
+//
+// NOT `app.connections`, even though the authorize endpoint accepts it. It is a NON-TENANTED scope,
+// and Xero's docs are explicit that those work only with the Client Credentials grant — we use
+// authorization_code, where `/connections` is readable with the plain access token. Requesting it
+// here asks a user to consent to something that does nothing, which is the opposite of the minimum
+// scope the same docs ask for.
 const SCOPES =
   process.env.XERO_SCOPES ??
   'openid profile email accounting.invoices.read accounting.contacts.read offline_access';

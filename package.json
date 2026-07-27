@@ -10,7 +10,8 @@
     "drain": "tsx scripts/drain.ts",
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "xero:sync": "tsx scripts/xero-sync.ts"
   },
   "dependencies": {
     "@caistech/email-compliance": "^0.4.0",

@@ -9,6 +9,8 @@
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
 import { sweep } from '../src/sweeper';
+import { XeroSourceConfirmer, xeroConnectionFor } from '../src/connectors/xero';
+import type { SourceConfirmer } from '../src/confirm';
 
 const SEED_TENANT = '00000000-0000-4000-a000-000000000001';
 
@@ -37,9 +39,22 @@ if (!url || !key) {
 }
 
 const dryRun = process.argv.includes('--dry-run');
+const ti = process.argv.indexOf('--tenant');
+const tenantId = ti > -1 ? process.argv[ti + 1] : SEED_TENANT;
 const supabase = createClient(url, key, { auth: { persistSession: false } });
 
-const report = await sweep({ supabase, tenantId: SEED_TENANT, dryRun });
+// Use the REAL confirmer wherever the tenant has a live Xero connection. Without this the sweep
+// would fall back to DevSourceConfirmer, which reads a seeded `_dev_source_truth` field that real
+// Xero rows do not have — so every real invoice would confirm as still-owing by default. That is
+// the exact failure the confirm step exists to prevent, arrived at by omission.
+const confirmers = new Map<string, SourceConfirmer>();
+const connection = await xeroConnectionFor(supabase, tenantId);
+if (connection) {
+  confirmers.set('xero', new XeroSourceConfirmer(supabase, connection, e.XERO_CLIENT_ID ?? '', e.XERO_CLIENT_SECRET ?? ''));
+  console.log('  using LIVE Xero confirmation for this tenant');
+}
+
+const report = await sweep({ supabase, tenantId, dryRun, confirmers });
 
 const icon: Record<string, string> = {
   emitted: '→ SENT   ',
@@ -49,7 +64,7 @@ const icon: Record<string, string> = {
   duplicate: '= DUPE   ',
 };
 
-console.log(`\nSweep ${dryRun ? '(DRY RUN — nothing written)' : '(APPLIED)'} · tenant ${SEED_TENANT.slice(0, 8)}…\n`);
+console.log(`\nSweep ${dryRun ? '(DRY RUN — nothing written)' : '(APPLIED)'} · tenant ${tenantId.slice(0, 8)}…\n`);
 for (const o of report.outcomes) {
   console.log(
     `  ${icon[o.verdict]}  flow ${o.flow.padEnd(4)} ${o.entity.slice(0, 32).padEnd(34)}` +

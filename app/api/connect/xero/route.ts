@@ -20,7 +20,22 @@ export const dynamic = 'force-dynamic';
 // Read-only where possible: the orchestrator needs to SEE invoices and contacts, not to write them.
 // accounting.transactions.read covers invoices; offline_access is what makes a refresh token appear
 // at all, and without it the connection dies in 30 minutes.
-const SCOPES = 'openid profile email accounting.transactions.read accounting.contacts.read offline_access';
+// Overridable, because which scopes an app may request is a property of the APP registration, not of
+// this code — and discovering that costs a failed consent round trip each time.
+//
+// Measured against the R&D-Tax app on 2026-07-28 by probing the authorize endpoint scope by scope:
+//   accounting.contacts / .read      accepted
+//   accounting.settings.read         accepted
+//   accounting.transactions / .read  REJECTED  ← invoices live here
+//   accounting.reports.read          REJECTED
+//
+// So that app cannot serve this connector, and there is no workaround: contacts alone cannot say
+// what is overdue. (It also means R&D-Tax's own integration cannot work — it requests
+// accounting.transactions.read from an app that rejects it.) Either the transactions scope is added
+// to that registration, or the orchestrator gets its own app — which it should have anyway.
+const SCOPES =
+  process.env.XERO_SCOPES ??
+  'openid profile email accounting.transactions.read accounting.contacts.read offline_access';
 
 export async function GET(request: Request) {
   const clientId = process.env.XERO_CLIENT_ID;

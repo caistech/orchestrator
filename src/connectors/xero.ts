@@ -110,10 +110,46 @@ export async function syncInvoices(
     connection.provider_org_id,
   );
 
+  const invoices = (data.Invoices ?? []) as any[];
+
+  // A SECOND CALL, because the invoice list does not carry it.
+  //
+  // Xero's /Invoices list returns a SUMMARISED Contact — id and name, no EmailAddress. The field is
+  // simply absent rather than null, so the first sync landed seven invoices with nowhere to send a
+  // chase and nothing to say why. Emails come from /Contacts, which is what accounting.contacts.read
+  // was requested for.
+  //
+  // Batched by id rather than fetching the whole contact list: a business with 2,000 contacts and 7
+  // overdue invoices should cost one small request, not a full download.
+  const contactIds = [...new Set(invoices.map((i) => i.Contact?.ContactID).filter(Boolean))];
+  const emailByContact = new Map<string, string>();
+
+  for (let i = 0; i < contactIds.length; i += 50) {
+    const batch = contactIds.slice(i, i + 50);
+    try {
+      const contacts = await xeroGet(
+        `/Contacts?IDs=${batch.join(',')}`,
+        token,
+        connection.provider_org_id,
+      );
+      for (const c of (contacts.Contacts ?? []) as any[]) {
+        // Xero returns an empty string when a contact has no email — treat that as absent, so the
+        // connector never writes '' and makes "has an address" untestable downstream.
+        const email = (c.EmailAddress ?? '').trim();
+        if (email) emailByContact.set(c.ContactID, email);
+      }
+    } catch (e) {
+      // A contacts failure must not lose the invoice sync. The invoices are still worth having —
+      // they just cannot be chased until an address exists, which the refusal path already handles
+      // honestly rather than sending to nowhere.
+      console.warn(`[xero] contact batch failed, invoices still synced: ${String((e as Error).message).slice(0, 120)}`);
+    }
+  }
+
   const today = new Date();
   let upserted = 0;
 
-  for (const inv of (data.Invoices ?? []) as any[]) {
+  for (const inv of invoices) {
     const due = inv.DueDateString ? new Date(inv.DueDateString) : null;
     // days_overdue is DERIVED here rather than stored by Xero, and it is the column every debtor
     // rule compares against. Negative means not yet due — kept as a negative rather than clamped to
@@ -129,7 +165,7 @@ export async function syncInvoices(
         source_id: inv.InvoiceID,
         synced_at: new Date().toISOString(),
         display_name: `${inv.InvoiceNumber ?? 'Invoice'} ${inv.Contact?.Name ?? ''}`.trim(),
-        email: inv.Contact?.EmailAddress ?? null,
+        email: emailByContact.get(inv.Contact?.ContactID) ?? inv.Contact?.EmailAddress ?? null,
         account_type: 'trade',
         days_overdue: daysOverdue,
         attributes: {

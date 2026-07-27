@@ -20,11 +20,25 @@ export const runtime = 'nodejs';
  * Anything else falls back to /queue rather than being repaired — a `next` we do not recognise is
  * one we should not follow.
  */
-function safeNext(raw: FormDataEntryValue | null): string {
+function safeNext(raw: FormDataEntryValue | null, base: string): string {
   const value = String(raw ?? '').trim();
-  if (!value.startsWith('/')) return '/queue';   // absolute URLs, scheme-relative, anything odd
-  if (value.startsWith('//') || value.startsWith('/\\')) return '/queue';  // protocol-relative
-  return value;
+  if (!value.startsWith('/')) return '/queue';                            // absolute, scheme-relative
+  if (value.startsWith('//') || value.startsWith('/\\')) return '/queue'; // protocol-relative
+
+  // Then RESOLVE and compare origins, rather than trusting the prefix checks above.
+  //
+  // String prefixes are a guess about how the runtime will parse the value, and that guess was
+  // already wrong once: `//evil.example.com` arrived here as a single-slash path, so the
+  // protocol-relative branch never fired and the redirect landed on /evil.example.com. Harmless on
+  // our own origin, but it proves the check was reasoning about a string the runtime had already
+  // rewritten. Resolving against the real base and comparing origin is decidable rather than
+  // predictive: whatever normalisation happens, the answer is "does this end up on our host".
+  try {
+    const resolved = new URL(value, base);
+    return resolved.origin === new URL(base).origin ? resolved.pathname + resolved.search : '/queue';
+  } catch {
+    return '/queue';
+  }
 }
 
 export async function POST(request: Request) {
@@ -33,7 +47,7 @@ export async function POST(request: Request) {
 
   const form = await request.formData();
   const supplied = String(form.get('secret') ?? '');
-  const next = safeNext(form.get('next'));
+  const next = safeNext(form.get('next'), request.url);
 
   // Constant-ish comparison: length check first, then a full scan that does not early-exit.
   let ok = supplied.length === expected.length;

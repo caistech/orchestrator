@@ -42,9 +42,40 @@ export const dynamic = 'force-dynamic';
 // authorization_code, where `/connections` is readable with the plain access token. Requesting it
 // here asks a user to consent to something that does nothing, which is the opposite of the minimum
 // scope the same docs ask for.
+// PROBED, NOT GUESSED (2026-07-28). The authorize endpoint answers a bad scope with a redirect to
+// /identity/error and a good one with a redirect to /identity/user/login, so each candidate can be
+// tested without a consent round trip. A control scope that cannot exist
+// (accounting.notathing.read) was rejected, which is what makes the accepted ones meaningful.
+//
+//   accounting.settings.read                    accepted  → /Organisation, and the bank ACCOUNT list
+//   accounting.reports.profitandloss.read       accepted  → the P&L report
+//   accounting.reports.banksummary.read         accepted  → the balances themselves
+//   accounting.reports.bankSummary.read         REJECTED  ← same scope, camelCase. This one cost an
+//                                                            hour: it reads as 'no such capability'
+//                                                            when it is a spelling.
+//   accounting.reports.read                     REJECTED  (broad-only; this app is post-March)
+//   accounting.transactions.read                REJECTED  (broad-only)
+//
+// GRANULAR SCOPES ARE LOWERCASE. Xero's own docs render several of them camelCase, and the endpoint
+// disagrees. When a scope looks like it should exist and does not, try the casing before concluding
+// the capability is unavailable.
+//
+// ⚠️ WIDENING THIS LIST DOES NOTHING FOR AN EXISTING CONNECTION. Scopes are fixed at consent, so a
+// business that has already connected must go through it again to gain them — the refresh token
+// carries what it was granted, not what we now ask for.
 const SCOPES =
   process.env.XERO_SCOPES ??
-  'openid profile email accounting.invoices.read accounting.contacts.read offline_access';
+  [
+    'openid',
+    'profile',
+    'email',
+    'accounting.invoices.read',
+    'accounting.contacts.read',
+    'accounting.settings.read',
+    'accounting.reports.profitandloss.read',
+    'accounting.reports.banksummary.read',
+    'offline_access',
+  ].join(' ');
 
 export async function GET(request: Request) {
   const clientId = process.env.XERO_CLIENT_ID;

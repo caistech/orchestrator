@@ -55,6 +55,30 @@ export async function POST(request: Request) {
   const supabase = serviceClient();
   const tenantId = body.tenantId || SEED_TENANT;
 
+  // FIRST CONTACT PROVISIONS THE TENANT.
+  //
+  // tasks.tenant_id references tenants(id), and the caller's key is its OWN canonical business+owner
+  // id — a real one that has never been seen here. Without this the very first dispatch from a live
+  // caller violated the foreign key and returned 500, which the caller correctly reported to the
+  // owner as "I couldn't reach the system that does that". The harness never caught it because it
+  // used the seeded tenant, which of course already existed: a fixture that exists is exactly the
+  // condition a first-contact bug hides behind.
+  //
+  // Safe to auto-create: a tenant provisioned this way has NO sender identity, and the email
+  // connector already refuses to send without legal_name + abn + postal_address. So this can bring a
+  // business into existence for the purpose of holding its tasks, and still cannot mail anyone on
+  // its behalf until a human fills that in.
+  const { error: tenantError } = await supabase
+    .from('tenants')
+    .upsert(
+      { id: tenantId, name: (body.context?.ownerName as string) ?? 'Unnamed business' },
+      { onConflict: 'id', ignoreDuplicates: true },
+    );
+  if (tenantError) {
+    console.error('[dispatch] could not ensure tenant:', tenantError);
+    return NextResponse.json({ error: 'Could not accept the task' }, { status: 500 });
+  }
+
   // A SPOKEN intent gets classified and drafted here, then HELD. Without this the owner said
   // something out loud, got "Accepted." and nothing ever happened — the row sat queued forever,
   // because nothing else in the orchestrator processes a SAY task. Kira's local stub always did

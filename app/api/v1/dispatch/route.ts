@@ -103,6 +103,20 @@ export async function POST(request: Request) {
 
   const holding = !!drafted;
 
+  // The drafter FAILED, as distinct from having nothing to do.
+  //
+  // askModel swallows every error and returns null — a 429, a timeout, a malformed completion all
+  // look identical to "no draft". Until now the route treated that exactly like a background job
+  // waiting its turn: the row went in as `queued` and the caller was told "Accepted." So Kira told
+  // an owner his email had been drafted and dispatched while the task sat undrafted forever, which
+  // is the one failure the human-in-the-loop design exists to prevent — being told a thing happened
+  // when it did not is worse than being told it cannot happen at all.
+  //
+  // A spoken request the classifier RECOGNISED but the drafter could not produce is a failure, and
+  // it is now recorded and reported as one.
+  const draftFailed =
+    body.ingress === 'SAY' && (OWNED_KINDS as string[]).includes(kind) && !drafted;
+
   const { data, error } = await supabase
     .from('tasks')
     .insert({
@@ -113,10 +127,21 @@ export async function POST(request: Request) {
       tier: body.ingress === 'SAY' ? 'C' : null,
       // Held for the owner when we have something to show them; 'unsupported' when nothing here can
       // do it — CAPTURED, never silently dropped, because that row is the agent-builder's backlog.
-      status: holding ? 'awaiting_approval' : kind === 'unsupported' && body.ingress === 'SAY' ? 'unsupported' : 'queued',
+      status: holding
+        ? 'awaiting_approval'
+        : draftFailed
+          ? 'failed'
+          : kind === 'unsupported' && body.ingress === 'SAY'
+            ? 'unsupported'
+            : 'queued',
       utterance: body.utterance ?? null,
       summary: drafted?.summary ?? classified?.reason_if_unsupported ?? body.utterance?.slice(0, 200) ?? null,
       payload: { ...(body.payload ?? {}), kind, classified: classified ?? undefined },
+      // Give the operator surfaces something to show besides a bare status. "The drafter did not
+      // return anything" is a sentence someone can act on; a `failed` with no reason is not.
+      ...(draftFailed
+        ? { result: { error: 'draft_failed', detail: 'The drafter returned nothing for a recognised request.' } }
+        : {}),
     })
     .select('id, status')
     .single();
@@ -175,8 +200,11 @@ export async function POST(request: Request) {
     needsRecipient,
     message: drafted
       ? "Drafted — say the word and I'll send it."
-      : kind === 'unsupported' && body.ingress === 'SAY'
-        ? classified?.reason_if_unsupported ?? "I've noted it — that's not one I can do myself yet."
-        : 'Accepted.',
+      : draftFailed
+        ? // Said plainly, because Kira reads this out. The owner must hear that NOTHING happened.
+          "I couldn't get that drafted just now — nothing has been sent. I've kept it and we can try again."
+        : kind === 'unsupported' && body.ingress === 'SAY'
+          ? classified?.reason_if_unsupported ?? "I've noted it — that's not one I can do myself yet."
+          : 'Accepted.',
   });
 }

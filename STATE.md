@@ -119,3 +119,30 @@ When a task or flow arrives that **no existing agent can do**, the system needs 
 than dropped, and ORCHESTRATOR_SPEC §5 calls it the source of truth for where the real decomposition
 boundaries are. **That table is the agent builder's backlog** — the phrases in it are the flows the
 registry does not yet cover. Maps to Seam 4 in Kira's `docs/GARETH_SHAH_INTEGRATION_SEAMS.md`.
+
+## DECIDED — Seam 2 (memory) does NOT move to a partner adapter (operator, 2026-07-28)
+
+Recorded here as well as in Kira because it **bounds what an incoming swarm adapter is allowed to
+own**, and this repo is where a replacement adapter gets plugged in.
+
+Kira's `docs/STATE_2026-07-28.md` carries the full reasoning; the operative constraint for anyone
+wiring an adapter here is short:
+
+- **Seam 1 (task dispatch) is the swappable one.** `KIRA_SWARM_ADAPTER` + a base URL replaces the
+  orchestrator wholesale, because the seam is a **wire contract** (`src/contract.ts`), not shared
+  types. That was always the design and is unchanged.
+- **Seam 2 (memory) is NOT swappable and is not on offer.** An adapter — ours, Gareth's swarm, or a
+  vendor's — **must not take write ownership of Kira's memory.** Kira's recall loop is live and
+  green (5/5 memory-loop probe); a second writer conflicts memories (Seam 2 #7: one writer per path)
+  and multiplies the failure surface of the one component that already cost two production
+  incidents to get right.
+- **Memory that is authoritative stays in our substrate.** The Business Genome is becoming the
+  handover artefact a buyer's accountant reads, i.e. it is drifting toward authoritative.
+  `DATA_STANDARD` **S1/D1** put that in our own tables — not in external semantic memory. An adapter
+  proposing to host it is proposing a downgrade, however it is labelled.
+- **What an adapter MAY do:** read to prime itself, and return distilled, non-PII conclusions for
+  Kira to write. Read-many, write-one.
+
+**Consequence for this repo:** if a partner adapter arrives, review it against Seam 1 only. A
+proposal that also claims Seam 2 write ownership is out of scope by decision, not by negotiation —
+send it back rather than widening the contract to fit it.

@@ -94,6 +94,45 @@ async function askModel(apiKey: string, system: string, user: string): Promise<R
   }
 }
 
+/** Shaped like an email address at all. Deliberately loose — the strict authority is the recipient. */
+const PLAUSIBLE_EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/**
+ * An address the owner SPELLED OUT, transcribed letter by letter and taken literally.
+ *
+ * Three or more single-character-then-separator groups at the start of the local part. A real
+ * hyphenated address ("jo-anne@", "mary-kate@") never matches, because those groups are words.
+ * This is not hypothetical: `m-c-m-d-e-n-n-i-s@gmail.com` reached the outbox and would have bounced.
+ */
+const SPELLED_ALOUD = /^([a-z0-9][-.\s]){3,}/i;
+
+/**
+ * What survives as a usable recipient.
+ *
+ * REFUSES rather than repairs. Stripping the separators out of a spelled-aloud address reconstructs
+ * this one correctly and is still the wrong move: it is a guess about what someone said out loud,
+ * and the cost of being wrong is a quote landing at a stranger's address. Returning null routes into
+ * the path that already exists for a missing recipient — Kira asks him for it — and asking is cheap.
+ *
+ * The near miss is the case no check catches: `mcdennis@gmail.com` for `mcmdennis@gmail.com` is one
+ * character short, perfectly well-formed, and only the owner can spot it. That is why every send is
+ * marked for a read-back rather than trusted to a regex.
+ */
+function usableRecipient(value: unknown): string | null {
+  const email = typeof value === 'string' ? value.trim() : '';
+  if (!email) return null;
+
+  if (SPELLED_ALOUD.test(email.split('@')[0] ?? '')) {
+    console.warn(`[drafter] refusing a spelled-aloud address (${email}) — asking the owner instead.`);
+    return null;
+  }
+  if (!PLAUSIBLE_EMAIL.test(email)) {
+    console.warn(`[drafter] refusing an unusable address (${email}) — asking the owner instead.`);
+    return null;
+  }
+  return email;
+}
+
 export async function classifyIntent(apiKey: string, utterance: string): Promise<Classified | null> {
   const raw = await askModel(apiKey, CLASSIFY_SYSTEM, utterance);
   if (!raw) return null;
@@ -101,7 +140,7 @@ export async function classifyIntent(apiKey: string, utterance: string): Promise
   return {
     kind: (OWNED_KINDS as string[]).includes(kind) ? (kind as OwnedKind) : 'unsupported',
     recipient_name: (raw.recipient_name as string) ?? null,
-    recipient_email: (raw.recipient_email as string) ?? null,
+    recipient_email: usableRecipient(raw.recipient_email),
     subject: (raw.subject as string) ?? null,
     due_hint: (raw.due_hint as string) ?? null,
     reason_if_unsupported: (raw.reason_if_unsupported as string) ?? null,

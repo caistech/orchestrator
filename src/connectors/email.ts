@@ -25,7 +25,9 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createEmailSender } from '@caistech/email-send';
+import { formatAbn } from '@caistech/abn-lookup';
 import { notifyCaller } from '../callback';
+import { renderEmail } from './email-render';
 import type { SenderIdentity } from '@caistech/email-compliance';
 
 export interface DrainOptions {
@@ -61,6 +63,8 @@ interface EffectRow {
   kind: string;
   idempotency_key: string;
   request: { to?: string; subject?: string; body?: string; commercial?: boolean };
+  /** Joined for tenancy; `payload.kind` also tells the renderer a quote from an ordinary message. */
+  tasks?: { tenant_id: string; payload?: { kind?: string } | null } | null;
 }
 
 export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport> {
@@ -84,17 +88,32 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
   const sender: SenderIdentity = {
     name: tenant.legal_name,
     email: tenant.reply_email || opts.from || '',
-    abn: tenant.abn,
+    // Spaced the way the ABR prints it. Stored as 11 bare digits, which is right for a column and
+    // wrong for a document: "ABN 51700805298" reads as a machine value in a footer a client is
+    // meant to be able to check.
+    abn: formatAbn(tenant.abn as string),
     postal: tenant.postal_address,
   };
 
   const mailer = createEmailSender({ apiKey, sender, from: opts.from });
 
+  // WHERE A REPLY GOES.
+  //
+  // The `from` is the portfolio's verified sending subdomain — it has to be, or Resend rejects the
+  // send — and it is a noreply address we own. Without an explicit Reply-To, a client who hits
+  // reply on their quote is writing to a mailbox belonging to neither party. Nothing bounces and
+  // nobody is told; the reply simply never reaches the business that sent the quote.
+  //
+  // The tenant's reply_email is already collected and already sits in the footer. It just was never
+  // put in the one header that decides where the conversation continues.
+  const replyTo = (tenant.reply_email as string | null) || undefined;
+
   // Only rows for THIS tenant's tasks. effects has no tenant column — it hangs off tasks — so the
-  // join is the tenancy boundary and must not be dropped for convenience.
+  // join is the tenancy boundary and must not be dropped for convenience. `payload` rides along so
+  // the renderer knows a quote from a message without a second query per row.
   const { data: candidates, error } = await supabase
     .from('effects')
-    .select('id, task_id, kind, idempotency_key, request, tasks!inner(tenant_id)')
+    .select('id, task_id, kind, idempotency_key, request, tasks!inner(tenant_id, payload)')
     .eq('status', 'pending')
     .eq('kind', 'email.send')
     .eq('tasks.tenant_id', tenantId)
@@ -149,11 +168,21 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
     try {
       const realTo = opts.redirectTo ?? to;
       const subjectOut = opts.redirectTo ? `[to: ${to}] ${subject}` : subject;
+      // One <p> around the whole body used to be the entire template. HTML collapses whitespace, so
+      // every paragraph break and every bullet in a drafted quote arrived as one run-on line.
+      const rendered = renderEmail({
+        body: row.request?.body ?? '',
+        businessName: (tenant.name as string) || (tenant.legal_name as string),
+        kind: (row.tasks?.payload as { kind?: string } | null)?.kind ?? null,
+        dateLabel: new Date().toLocaleDateString('en-AU', { day: 'numeric', month: 'long', year: 'numeric' }),
+      });
+
       const result = await mailer.send({
         to: realTo,
         subject: subjectOut,
-        html: `<p>${escapeHtml(row.request?.body ?? '')}</p>`,
-        text: row.request?.body ?? '',
+        replyTo,
+        html: rendered.html,
+        text: rendered.text,
         compliance: commercial
           ? { unsubscribeUrl: `${opts.unsubscribeBaseUrl}?e=${encodeURIComponent(to)}`, reason: 'inferred' }
           : { transactional: true },

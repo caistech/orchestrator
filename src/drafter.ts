@@ -58,12 +58,20 @@ function draftSystem(kind: OwnedKind, ownerName: string | null): string {
     signoff +
     "NEVER write a placeholder for the sender (no [Owner's Name], [Your Name], [Company]) — the " +
     'preview is sent exactly as written. ' +
+    // Applied to EVERY kind, not just `email`. It was on the email instruction alone, so quotes
+    // arrived with "Subject: …" as the first line of the message body — the subject printed twice,
+    // once by the mail client and once in the text, on a $60,000 quote to a client.
+    'NEVER include a "Subject:" line inside the body — the subject is a separate field. ' +
+    // The renderer turns blank lines into paragraphs and "- " lines into a real list. Prose written
+    // as one block renders as one block, which is how the first quote went out.
+    'Structure it: short paragraphs separated by a blank line, and put any scope or pricing on ' +
+    'their own "- " lines so they render as a list. ' +
     'Reply with ONLY a JSON object: {"summary": one line the owner hears, "preview": the full draft}.';
 
   if (kind === 'quote')
-    return `${common} Draft a short client-ready quote message. If amounts or scope are missing, draft the covering message and leave clearly-marked [line item] / [$amount] placeholders for the owner to fill.`;
+    return `${common} Draft a short client-ready quote message: a one-line opener, the scope and price as "- " lines, then what happens next. State amounts tax-exclusive with "plus GST". If amounts or scope are missing, draft the covering message and leave clearly-marked [line item] / [$amount] placeholders for the owner to fill.`;
   if (kind === 'email')
-    return `${common} Draft the email body only (no subject line inside the body). Keep it a few sentences.`;
+    return `${common} Draft the email body only. Keep it a few sentences.`;
   return `${common} Draft a one-line reminder the owner will get back later, plus when it should fire.`;
 }
 

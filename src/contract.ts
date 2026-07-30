@@ -107,6 +107,45 @@ export interface TaskEventCallback {
 }
 
 /**
+ * PUT /v1/tenants/:tenantId/identity — WHOSE NAME IS ON THE EMAIL.
+ *
+ * Deliberately its OWN call rather than fields on DispatchRequest.context. The Spam Act footer
+ * carries the tenant's legal identity, so this decides which business the world believes sent the
+ * mail; it must be set once, on purpose, by a human who confirmed it — not carried along with every
+ * task where a bad classification or a stale cache could quietly change it.
+ *
+ * A tenant provisioned by first contact has none of this, and the email connector refuses to send
+ * without it. This is the only thing that lifts that refusal.
+ */
+export interface TenantIdentityRequest {
+  version: typeof CONTRACT_VERSION;
+  /** The registered legal entity — not the trading name. This is what the footer must say. */
+  legalName: string;
+  /** 11 digits. Stored normalised; the caller may send it spaced. */
+  abn: string;
+  /** Reply-capable postal address, already composed into one line. */
+  postalAddress: string;
+  /**
+   * Where replies land. Optional on the wire and NOT optional in practice: absent, the connector
+   * falls back to the sending domain, which is OURS — so the tenant's customer replies to a quote
+   * and the tenant never sees it. Callers should always send it.
+   */
+  replyEmail?: string;
+  /** Trading name, when it differs from the entity (a trust that trades under a business name). */
+  tradingName?: string;
+  /** When the owner authorised mail to go out under this ABN, ISO-8601. Recorded, not enforced. */
+  authorisedAt?: string;
+}
+
+export interface TenantIdentityResponse {
+  version: typeof CONTRACT_VERSION;
+  tenantId: TenantId;
+  /** True once legal_name + abn + postal_address are all present — i.e. sends are no longer refused. */
+  canSend: boolean;
+  error?: string;
+}
+
+/**
  * Auth between systems (§Cross-cutting 24). A shared secret in a header, checked fail-closed on
  * BOTH legs — an unset secret refuses the request rather than waving it through. These seams carry
  * live business data and can spend money; the posture matches the webhook routes, which refuse to

@@ -87,6 +87,38 @@ export interface TaskStatusResponse {
   message?: string;
 }
 
+/** One row of the list leg. Enough to RECONSTRUCT a caller's missing mirror row, and no more. */
+export interface TaskListItem {
+  taskGroupId: string;
+  status: TaskState;
+  /** 'quote' | 'email' | 'reminder' when the classifier decided one; null when it did not. */
+  kind: string | null;
+  /** What the owner said, verbatim — the caller's row requires it and must not invent it. */
+  utterance: string | null;
+  summary: string | null;
+  createdAt: string;
+}
+
+/**
+ * GET /v1/tasks?tenantId=… — THE LIST LEG.
+ *
+ * The poll leg above can only ask about a task the caller already knows about, so it cannot answer
+ * the one question that matters after a mirror write is lost: *what do you hold for this tenant that
+ * I do not?* Every repair path on the caller's side starts from the rows it already has, which means
+ * a task that never mirrored is unreachable by construction — it exists here, and on no screen there.
+ *
+ * `tenantId` is REQUIRED, and that is the whole security posture of this endpoint. A missing filter
+ * on a by-id read leaks one task; a missing filter on a LIST returns every business's task summaries
+ * in a single call. Absent or blank is a 400, never an implicit "all".
+ */
+export interface TaskListResponse {
+  version: typeof CONTRACT_VERSION;
+  tenantId: TenantId;
+  tasks: TaskListItem[];
+  /** True when the limit was hit — there is more to fetch, so a caller must not read "nothing else". */
+  truncated: boolean;
+}
+
 /**
  * POST → the caller's webhook. The RETURN LEG.
  *

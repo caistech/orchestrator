@@ -26,6 +26,7 @@ import {
   googleConnectionFor,
   grantedDriveAccess,
   listFiles,
+  readFileText,
   type GoogleConnection,
 } from '@/src/connectors/google';
 import { resolveRecipientByName } from '@/src/connectors/google-contacts';
@@ -56,10 +57,19 @@ export async function GET(request: Request, context: { params: Promise<{ tenantI
   const kind = (url.searchParams.get('kind') ?? '').trim().toLowerCase();
   const q = (url.searchParams.get('q') ?? '').trim();
 
-  if (kind !== 'drive' && kind !== 'contacts') {
-    return NextResponse.json({ error: 'kind must be drive or contacts' }, { status: 400 });
+  const fileId = (url.searchParams.get('id') ?? '').trim();
+
+  if (kind !== 'drive' && kind !== 'contacts' && kind !== 'file') {
+    return NextResponse.json({ error: 'kind must be drive, contacts or file' }, { status: 400 });
   }
-  if (!q) return NextResponse.json({ error: 'q is required' }, { status: 400 });
+  // `file` is addressed by id, the others by query. The id always comes from a previous `drive`
+  // result — and it is not a credential: it is resolved against the OWNER'S OWN token, so an id
+  // that is wrong, stale or invented can only ever reach a file that owner could already open.
+  if (kind === 'file') {
+    if (!fileId) return NextResponse.json({ error: 'id is required for kind=file' }, { status: 400 });
+  } else if (!q) {
+    return NextResponse.json({ error: 'q is required' }, { status: 400 });
+  }
 
   const supabase = serviceClient();
   const connection = await googleConnectionFor(supabase, tenantId);
@@ -106,7 +116,7 @@ export async function GET(request: Request, context: { params: Promise<{ tenantI
     });
   }
 
-  /* -------------------------------- DRIVE --------------------------------- */
+  /* --------------------------- DRIVE (search + read) ---------------------- */
   const granted = grantedDriveAccess(connection.scopes);
   if (!granted) {
     return NextResponse.json({
@@ -136,6 +146,100 @@ export async function GET(request: Request, context: { params: Promise<{ tenantI
       reason: "your Google connection needs renewing — reconnect it in Settings",
       results: [],
     });
+  }
+
+  /* ------------------------------ ONE FILE -------------------------------- */
+  //
+  // Finding a document and being unable to say anything about it is barely half an answer. The
+  // owner hit that within a minute of the search shipping: he found his Lot 109 quote, asked what
+  // was inside it, and the honest reply was that we could only see its name.
+  //
+  // TWO SHAPES COME BACK, and the caller must handle both. `text` is a document this connector can
+  // read on its own — a Google Doc, a CSV, plain text. `contentBase64` is everything else, which is
+  // most of what a real business keeps: PDFs and .docx have bytes but no text until something
+  // extracts them, and extraction does NOT belong here. It belongs where an extractor already
+  // exists (Kira's ingest path), so this endpoint's job ends at handing over the file.
+  if (kind === 'file') {
+    // A cap, because the response is JSON and base64 inflates by a third. Documents are small; a
+    // video is not, and the failure mode without this is a multi-hundred-megabyte string.
+    const MAX_BYTES = 8 * 1024 * 1024;
+    try {
+      const metaUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+      metaUrl.searchParams.set('fields', 'id,name,mimeType,size,modifiedTime,webViewLink');
+      metaUrl.searchParams.set('supportsAllDrives', 'true');
+      const metaRes = await fetch(metaUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (metaRes.status === 404) {
+        return NextResponse.json({
+          version: CONTRACT_VERSION,
+          ok: false,
+          reason: "I couldn't find that file in your Drive — it may have been moved or deleted",
+        });
+      }
+      if (!metaRes.ok) throw new Error(`metadata ${metaRes.status}`);
+      const file = (await metaRes.json()) as {
+        id: string;
+        name: string;
+        mimeType: string;
+        size?: string;
+        webViewLink?: string;
+      };
+
+      if (file.size && Number(file.size) > MAX_BYTES) {
+        return NextResponse.json({
+          version: CONTRACT_VERSION,
+          ok: false,
+          reason: `"${file.name}" is too large for me to read in a conversation`,
+        });
+      }
+
+      // Native Google types have no bytes and must be exported; readFileText already knows that,
+      // and it is the single most common reason a Drive integration returns empty content for
+      // exactly the documents that matter.
+      const text = await readFileText(accessToken, file);
+      if (text !== null) {
+        return NextResponse.json({
+          version: CONTRACT_VERSION,
+          ok: true,
+          name: file.name,
+          mimeType: file.mimeType,
+          link: file.webViewLink ?? null,
+          text,
+        });
+      }
+
+      const mediaUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+      mediaUrl.searchParams.set('alt', 'media');
+      mediaUrl.searchParams.set('supportsAllDrives', 'true');
+      const mediaRes = await fetch(mediaUrl, { headers: { Authorization: `Bearer ${accessToken}` } });
+      if (!mediaRes.ok) throw new Error(`download ${mediaRes.status}`);
+      const bytes = Buffer.from(await mediaRes.arrayBuffer());
+      // Checked again after download: `size` is absent for some types, so the pre-check above can
+      // pass a file that turns out to be enormous.
+      if (bytes.byteLength > MAX_BYTES) {
+        return NextResponse.json({
+          version: CONTRACT_VERSION,
+          ok: false,
+          reason: `"${file.name}" is too large for me to read in a conversation`,
+        });
+      }
+
+      return NextResponse.json({
+        version: CONTRACT_VERSION,
+        ok: true,
+        name: file.name,
+        mimeType: file.mimeType,
+        link: file.webViewLink ?? null,
+        size: bytes.byteLength,
+        contentBase64: bytes.toString('base64'),
+      });
+    } catch (error) {
+      console.error('[v1/lookup] file read failed:', error);
+      return NextResponse.json({
+        version: CONTRACT_VERSION,
+        ok: false,
+        reason: "I couldn't open that file just now",
+      });
+    }
   }
 
   try {

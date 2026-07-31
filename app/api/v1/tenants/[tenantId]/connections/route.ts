@@ -21,6 +21,7 @@ import { NextResponse } from 'next/server';
 import { serviceClient } from '@/lib/supabase';
 import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER } from '@/src/contract';
 import { grantedDriveAccess } from '@/src/connectors/google';
+import { grantedContactsAccess } from '@/src/connectors/google-contacts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,6 +57,18 @@ export async function GET(request: Request, context: { params: Promise<{ tenantI
     driveAccess: row.provider === 'google' ? grantedDriveAccess(row.scopes as string | null) : null,
     /** Whether mail was granted, so the settings page can be honest about what Kira can reach. */
     gmail: String(row.scopes ?? '').includes('/auth/gmail.'),
+    /**
+     * Whether the contact books were granted.
+     *
+     * Worth its own line on the settings page rather than being folded into "connected". Without it
+     * every send addressed by name stops and asks for an address, which the owner experiences as
+     * Kira being forgetful rather than as a permission he declined — and the fix is a reconnect he
+     * has no reason to think of.
+     */
+    contacts:
+      row.provider === 'google'
+        ? grantedContactsAccess(row.scopes as string | null)
+        : null,
     connectedAt: row.connected_at as string | null,
     lastSyncedAt: row.last_synced_at as string | null,
     revoked: Boolean(row.revoked_at),

@@ -41,6 +41,8 @@ const USERINFO = 'https://www.googleapis.com/oauth2/v2/userinfo';
  */
 export type DriveAccess = 'full' | 'readonly' | 'picked';
 
+import { CONTACTS_SCOPES } from './google-contacts';
+
 const BASE_SCOPES = ['openid', 'email', 'profile'];
 
 const DRIVE_SCOPE: Record<DriveAccess, string> = {
@@ -49,8 +51,20 @@ const DRIVE_SCOPE: Record<DriveAccess, string> = {
   picked: 'https://www.googleapis.com/auth/drive.file',
 };
 
+/**
+ * Contacts is requested alongside Drive, not as a separate connection.
+ *
+ * The alternative — a second consent trip when the owner first asks to email someone by name — puts
+ * an OAuth screen in the middle of a voice call, which is where it can least be dealt with. Both
+ * scopes are read-only and merely SENSITIVE rather than restricted, so they add nothing to the
+ * verification burden that Drive does not already carry.
+ *
+ * He can still untick them on the consent screen, and that is why nothing here assumes the request
+ * was granted: `grantedContactsAccess` reads back what actually came, and a lookup without the scope
+ * degrades to asking him for the address, exactly as it does today.
+ */
 export function scopesFor(access: DriveAccess): string {
-  return [...BASE_SCOPES, DRIVE_SCOPE[access]].join(' ');
+  return [...BASE_SCOPES, DRIVE_SCOPE[access], ...CONTACTS_SCOPES].join(' ');
 }
 
 export function isDriveAccess(value: unknown): value is DriveAccess {

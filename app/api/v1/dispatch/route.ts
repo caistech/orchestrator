@@ -19,6 +19,32 @@ import { NextResponse } from 'next/server';
 import { serviceClient, SEED_TENANT } from '@/lib/supabase';
 import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER, type DispatchRequest } from '@/src/contract';
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
+import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
+
+/**
+ * Look a spoken name up in the tenant's own contact books.
+ *
+ * FAIL-SOFT BY CONSTRUCTION. This runs inside a live voice call, and a contact lookup is the least
+ * important thing happening in one: an unconfigured OAuth client, a revoked token or a People API
+ * outage must leave the owner exactly where he was before this existed — asked for the address —
+ * never staring at a failed dispatch. Every error becomes `unavailable`, which the caller says out
+ * loud honestly rather than reporting as "no such contact".
+ */
+async function lookupRecipient(
+  supabase: ReturnType<typeof serviceClient>,
+  tenantId: string,
+  name: string,
+): Promise<RecipientResolution | null> {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  try {
+    return await resolveRecipientByName(supabase, tenantId, name, clientId, clientSecret);
+  } catch (error) {
+    console.error('[v1/dispatch] contact lookup failed (asking the owner instead):', error);
+    return { status: 'unavailable', reason: 'the contact lookup did not answer' };
+  }
+}
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -87,11 +113,28 @@ export async function POST(request: Request) {
   let classified: Awaited<ReturnType<typeof classifyIntent>> = null;
   let drafted: Awaited<ReturnType<typeof draftForIntent>> = null;
   let kind: OwnedKind | 'unsupported' = 'unsupported';
+  let contactLookup: RecipientResolution | null = null;
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (body.ingress === 'SAY' && body.utterance && apiKey) {
     classified = await classifyIntent(apiKey, body.utterance);
     kind = classified?.kind ?? 'unsupported';
+
+    // The owner said a NAME, not an address — "send an RFQ to Roger at Quantum Surveys". The
+    // classifier is forbidden from inventing the address, correctly, so this is where the task used
+    // to stop: an RFQ for Lot 109 sat queued for three days with `to: null` because nothing could
+    // turn "Roger" into an email. His contact book can.
+    //
+    // A single match is a SUGGESTION, and the read-back before sending is unchanged — a lookup can
+    // return the wrong Roger as easily as a transcription can drop a letter. Several matches, or
+    // none, leave the address null and the existing "ask him" path handles it exactly as before.
+    if (classified?.recipient_name && !classified.recipient_email) {
+      contactLookup = await lookupRecipient(supabase, body.tenantId, classified.recipient_name);
+      if (contactLookup?.status === 'resolved') {
+        classified = { ...classified, recipient_email: contactLookup.match.email };
+      }
+    }
+
     if (classified && (OWNED_KINDS as string[]).includes(kind)) {
       // The owner's name comes from the CALLER, not from here. Identity of a person belongs to Kira;
       // this system holds a tenant. Absent, the drafter is told to sign off with no name rather than
@@ -190,6 +233,20 @@ export async function POST(request: Request) {
   const isSend = kind === 'email' || kind === 'quote';
   const needsRecipient = isSend && !classified?.recipient_email;
 
+  // What to SAY about the lookup, appended to the message Kira reads out.
+  //
+  // Three outcomes, three different sentences, and the third is the one worth being careful about:
+  // "I don't have a Roger" and "I can't see your contacts" send the owner off to do completely
+  // different things, so a failed lookup must never be reported as an empty one.
+  const lookupLine =
+    contactLookup?.status === 'ambiguous'
+      ? ` I found more than one ${classified?.recipient_name ?? 'match'} — ${contactLookup.matches
+          .map((m) => `${m.name ?? 'unnamed'} at ${m.email}`)
+          .join(', ')}. Which one?`
+      : contactLookup?.status === 'unavailable'
+        ? ` I couldn't check your contacts (${contactLookup.reason}), so I'll need the address.`
+        : '';
+
   return NextResponse.json({
     version: CONTRACT_VERSION,
     taskGroupId: data.id,
@@ -198,8 +255,16 @@ export async function POST(request: Request) {
       ? { kind, summary: drafted.summary, preview: drafted.preview, artifact: { ...classified } }
       : undefined,
     needsRecipient,
+    // Stated so the caller can say where an address came from. An address the owner never spoke,
+    // read back without saying it was looked up, invites a yes to a question he did not know he was
+    // being asked.
+    recipientSource: contactLookup?.status === 'resolved' ? 'contacts' : undefined,
+    recipientOptions:
+      contactLookup?.status === 'ambiguous'
+        ? contactLookup.matches.map((m) => ({ name: m.name, email: m.email }))
+        : undefined,
     message: drafted
-      ? "Drafted — say the word and I'll send it."
+      ? `Drafted — say the word and I'll send it.${lookupLine}`
       : draftFailed
         ? // Said plainly, because Kira reads this out. The owner must hear that NOTHING happened.
           "I couldn't get that drafted just now — nothing has been sent. I've kept it and we can try again."

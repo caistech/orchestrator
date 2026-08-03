@@ -165,6 +165,15 @@ export interface TenantIdentityRequest {
   replyEmail?: string;
   /** Trading name, when it differs from the entity (a trust that trades under a business name). */
   tradingName?: string;
+  /**
+   * The verified address this tenant's mail is SENT FROM — "Factory2Key <noreply@updates.f2k.com.au>".
+   *
+   * Optional, and absent is a real state rather than an oversight: until the client's registrar has
+   * added the DKIM and return-path records, there is no verified domain to send from, and the mail
+   * goes out on the portfolio default with the tenant's identity in the footer. Set it only after
+   * Resend reports the domain verified — an unverified domain is rejected at send time.
+   */
+  fromEmail?: string;
   /** When the owner authorised mail to go out under this ABN, ISO-8601. Recorded, not enforced. */
   authorisedAt?: string;
 }

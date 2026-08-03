@@ -54,6 +54,12 @@ export interface DrainReport {
   sent: number;
   failed: number;
   refused: number;
+  /**
+   * True when this tenant has no verified sending address of its own and the mail went out on the
+   * portfolio default. Not an error — but it means the recipient saw OUR domain on THEIR business's
+   * email, so it must never be something you have to go and check for.
+   */
+  usedFallbackFrom?: boolean;
   details: Array<{ subject: string; outcome: string; detail?: string }>;
 }
 
@@ -74,7 +80,7 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
   // The tenant's own legal identity. Without it there is no lawful footer, so there is no send.
   const { data: tenant } = await supabase
     .from('tenants')
-    .select('legal_name, abn, postal_address, reply_email, name')
+    .select('legal_name, abn, postal_address, reply_email, from_email, name')
     .eq('id', tenantId)
     .maybeSingle();
 
@@ -85,9 +91,24 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
     );
   }
 
+  // WHOSE DOMAIN THE MAIL LEAVES ON.
+  //
+  // Resolved PER TENANT, falling back to the portfolio default. The footer already carried the
+  // tenant's legal identity, so a shared `from` was never unlawful — it was a construction client
+  // receiving a Factory2Key quote from an AI company's domain, on the one document where who sent
+  // it is the entire point.
+  //
+  // The fallback is deliberate rather than a gap: a tenant that has not yet verified a domain still
+  // sends, because refusing would stop every tenant that has not done DNS — which today is all of
+  // them, and DNS usually sits with someone else's provider on someone else's timescale. What must
+  // not happen is the fallback being INVISIBLE, so it is reported (`usedFallbackFrom`) and the cron
+  // prints it. A quiet fallback is how "we set that up weeks ago" survives being untrue.
+  const fromAddress = (tenant.from_email as string | null) || opts.from;
+  report.usedFallbackFrom = !tenant.from_email && Boolean(opts.from);
+
   const sender: SenderIdentity = {
     name: tenant.legal_name,
-    email: tenant.reply_email || opts.from || '',
+    email: tenant.reply_email || fromAddress || '',
     // Spaced the way the ABR prints it. Stored as 11 bare digits, which is right for a column and
     // wrong for a document: "ABN 51700805298" reads as a machine value in a footer a client is
     // meant to be able to check.
@@ -95,7 +116,7 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
     postal: tenant.postal_address,
   };
 
-  const mailer = createEmailSender({ apiKey, sender, from: opts.from });
+  const mailer = createEmailSender({ apiKey, sender, from: fromAddress });
 
   // WHERE A REPLY GOES.
   //

@@ -42,6 +42,8 @@ interface TenantOutcome {
   sent?: number;
   failed?: number;
   refused?: number;
+  /** Sent on the portfolio default because this tenant has no verified domain of its own. */
+  fallbackFrom?: boolean;
   reason?: string;
 }
 
@@ -105,7 +107,16 @@ export async function GET(request: Request) {
       totals.sent += report.sent;
       totals.failed += report.failed;
       totals.refused += report.refused;
-      tenants.push({ tenantId, outcome: 'drained', sent: report.sent, failed: report.failed, refused: report.refused });
+      tenants.push({
+        tenantId,
+        outcome: 'drained',
+        sent: report.sent,
+        failed: report.failed,
+        refused: report.refused,
+        // Surfaced per tenant rather than aggregated: "some mail went out on our domain" is not
+        // actionable, "THIS tenant's did" is.
+        ...(report.usedFallbackFrom && report.sent > 0 ? { fallbackFrom: true } : {}),
+      });
     } catch (caught) {
       if (isIdentityGap(caught)) {
         totals.skipped += 1;

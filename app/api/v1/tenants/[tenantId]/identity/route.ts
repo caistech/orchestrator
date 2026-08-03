@@ -112,6 +112,12 @@ export async function PUT(request: Request, context: { params: Promise<{ tenantI
         abn,
         postal_address: postalAddress,
         reply_email: (body.replyEmail || '').trim() || null,
+        // The verified sending address for THIS tenant's domain. Omitted or blank leaves the tenant
+        // on the portfolio default — deliberately, because DNS verification usually sits with the
+        // client's registrar or IT provider and must not block them being onboarded. Setting it
+        // before Resend has verified the domain makes every send fail, so it belongs here, in a
+        // call made once by a human who checked, and not in a config that drifts.
+        from_email: (body.fromEmail || '').trim() || null,
       },
       { onConflict: 'id' },
     );

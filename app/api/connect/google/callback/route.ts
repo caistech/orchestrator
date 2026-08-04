@@ -63,7 +63,11 @@ export async function GET(request: Request) {
   if (!st) return page('That authorisation link has already been used, or did not come from here.', 400);
 
   const meta = (st.metadata ?? {}) as { requested_access?: string; expected_email?: string | null; return_to?: string | null };
-  const requested: DriveAccess = isDriveAccess(meta.requested_access) ? meta.requested_access : 'readonly';
+  // Matches the consent route's DEFAULT_DRIVE_ACCESS — `picked`, not `readonly`. This is only the
+  // fallback for a state row without a recorded choice, but if the two disagree the label shown to
+  // the owner describes a different access level from the one he was actually sent to grant.
+  // What was GRANTED is still read back from the token response below and never assumed.
+  const requested: DriveAccess = isDriveAccess(meta.requested_access) ? meta.requested_access : 'picked';
 
   let tokens;
   try {

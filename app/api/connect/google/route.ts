@@ -19,6 +19,26 @@ import { consentUrl, isDriveAccess, type DriveAccess } from '@/src/connectors/go
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+/**
+ * `picked`, NOT `readonly` — a load-bearing default rather than a cosmetic one.
+ *
+ * `readonly` is the only one of the three that CANNOT WRITE, so an owner who took the old default
+ * could never have his operating manual filed back into his own Drive, which is the point of the
+ * product. Fixing it later means asking a cautious sixty-something for a second consent months
+ * after the first, which is the kind of thing that simply does not happen.
+ *
+ * `picked` (`drive.file`) is also the LEAST privilege of the three: files this app created, and
+ * nothing else. Least privilege, write-capable, and — per `DriveAccess` in
+ * src/connectors/google.ts — the option that avoids Google's restricted-scope verification and its
+ * third-party security assessment. That alignment is rare enough to take.
+ *
+ * Changed on 2026-08-05 while exactly ONE owner was connected, on `full`, so unaffected. Every later
+ * owner inherits this. Doing it after a second connection would have owed each of them a re-consent.
+ *
+ * Kept in step with the callback's own fallback — see app/api/connect/google/callback/route.ts.
+ */
+const DEFAULT_DRIVE_ACCESS: DriveAccess = 'picked';
+
 export async function GET(request: Request) {
   const secret = process.env.ORCHESTRATOR_SECRET;
   if (!secret) {
@@ -42,7 +62,7 @@ export async function GET(request: Request) {
     return page('That link has expired or is not valid. Start again from your Kira setup page.', 400);
   }
 
-  const access: DriveAccess = isDriveAccess(claim.access) ? claim.access : 'readonly';
+  const access: DriveAccess = isDriveAccess(claim.access) ? claim.access : DEFAULT_DRIVE_ACCESS;
 
   // Single-use, server-side. Not a signed cookie: the callback must be able to prove this request
   // started here even if the browser dropped a cookie on the round trip through Google.

@@ -292,3 +292,146 @@ export async function googleConnectionFor(
     .maybeSingle();
   return (data as (GoogleConnection & { scopes: string | null; provider_org_name: string | null }) | null) ?? null;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WRITING. Everything above reads; this is the half that lets the manual leave us.
+//
+// Kira's job is a migration — knowledge out of the owner's head and into the business's own
+// systems. Until this existed every path terminated in our database, which for him is a worse place
+// than his head: he cannot get it out without us.
+//
+// SCOPE. `drive.file` is enough for all of it. It grants access to files THIS APP CREATED and
+// nothing else, so a write-back needs no sight of the rest of his Drive — which is also the easiest
+// consent to put in front of a cautious owner, and (per `DriveAccess` above) the option that avoids
+// Google's restricted-scope verification.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const DOC_MIME = 'application/vnd.google-apps.document';
+
+/**
+ * A string safe to interpolate into Drive query syntax.
+ *
+ * "O'Brien Plumbing" is not an exotic trading name, and an unescaped apostrophe ends the quoted
+ * string early — turning the rest of the query into syntax Drive rejects, or worse, into a different
+ * query. Drive escapes with a backslash, and the backslash itself must go first or it re-escapes the
+ * escapes.
+ *
+ * Exported so it can be tested directly: this is the kind of two-line function that is either
+ * exactly right or subtly wrong, and it is built from char codes rather than literals because
+ * writing it through tooling has already corrupted the escapes once.
+ */
+export function driveQuoted(value: string): string {
+  const BACKSLASH = String.fromCharCode(92);
+  const APOSTROPHE = String.fromCharCode(39);
+  return value.split(BACKSLASH).join(BACKSLASH + BACKSLASH).split(APOSTROPHE).join(BACKSLASH + APOSTROPHE);
+}
+
+/**
+ * Find-or-create a folder, idempotently.
+ *
+ * FIND FIRST, ALWAYS. Drive lets two folders share a name in the same parent — it keys on id, not
+ * name — so a create-first implementation silently accumulates a new folder per run and the owner
+ * ends up with six "Operating Manual" folders, five of them stale. He would not report that as a
+ * bug; he would conclude the product does not work and stop opening it.
+ *
+ * Restricted to files this app created (`drive.file` gives us nothing else anyway), so this cannot
+ * adopt a folder of his that happens to share the name.
+ */
+export async function ensureFolder(
+  accessToken: string,
+  name: string,
+  parentId?: string,
+): Promise<{ id: string; created: boolean; webViewLink: string | null }> {
+  const url = new URL(`${DRIVE_API}/files`);
+  // The name is interpolated into Drive query syntax, so a single quote in a trading name would end
+  // the string early — "O'Brien Plumbing" is not an exotic case. Drive escapes with a backslash.
+  const safe = driveQuoted(name);
+  url.searchParams.set(
+    'q',
+    [`mimeType = '${FOLDER_MIME}'`, `name = '${safe}'`, 'trashed = false', parentId ? `'${parentId}' in parents` : null]
+      .filter(Boolean)
+      .join(' and '),
+  );
+  url.searchParams.set('fields', 'files(id,webViewLink)');
+  url.searchParams.set('pageSize', '1');
+
+  const found = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+  if (!found.ok) throw new Error(`Drive folder lookup failed (${found.status}): ${(await found.text()).slice(0, 200)}`);
+  const existing = ((await found.json()) as { files?: { id: string; webViewLink?: string }[] }).files?.[0];
+  if (existing?.id) return { id: existing.id, created: false, webViewLink: existing.webViewLink ?? null };
+
+  const res = await fetch(`${DRIVE_API}/files?fields=id,webViewLink`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, mimeType: FOLDER_MIME, ...(parentId ? { parents: [parentId] } : {}) }),
+  });
+  if (!res.ok) throw new Error(`Drive folder create failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const created = (await res.json()) as { id: string; webViewLink?: string };
+  return { id: created.id, created: true, webViewLink: created.webViewLink ?? null };
+}
+
+/**
+ * Create or replace ONE document, as a native Google Doc.
+ *
+ * HTML IN, GOOGLE DOC OUT. The read path above notes that a native Doc has no bytes and must be
+ * EXPORTED; writing is the same fact in reverse — upload HTML and let Drive convert. Markdown does
+ * not convert, and a PDF would leave him a document he cannot edit, which stops being current the
+ * day it is written.
+ *
+ * IDEMPOTENCY IS THE CALLER'S, deliberately. Drive cannot know that "Cash and invoicing" is the same
+ * area it wrote last month, and matching on the title would break the moment an owner renames the
+ * document — which is a thing he is supposed to be able to do, because it is his. So the caller
+ * stores the returned `id` and hands it back; with an id this UPDATES, without one it CREATES.
+ *
+ * A MISSING FILE IS NOT AN ERROR. If he deleted it, `existingId` 404s — and the right response is to
+ * write it again rather than to fail the run and leave a gap in his manual. That path is why this
+ * returns `created`.
+ */
+export async function upsertDoc(
+  accessToken: string,
+  params: { folderId: string; title: string; html: string; existingId?: string | null },
+): Promise<{ id: string; created: boolean; webViewLink: string | null }> {
+  const body = (metadata: Record<string, unknown>) => {
+    const boundary = `kira-${Math.random().toString(36).slice(2)}`;
+    return {
+      boundary,
+      payload:
+        `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n${params.html}\r\n` +
+        `--${boundary}--`,
+    };
+  };
+
+  const send = async (method: 'POST' | 'PATCH', path: string, metadata: Record<string, unknown>) => {
+    const { boundary, payload } = body(metadata);
+    return fetch(`${DRIVE_UPLOAD}${path}${path.includes('?') ? '&' : '?'}uploadType=multipart&fields=id,webViewLink`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body: payload,
+    });
+  };
+
+  if (params.existingId) {
+    // No `parents` on a PATCH: Drive rejects a parent change made this way, and the file is already
+    // where it belongs. Sending it is how an update becomes a 403 nobody expects.
+    const res = await send('PATCH', `/${params.existingId}`, { name: params.title, mimeType: DOC_MIME });
+    if (res.ok) {
+      const out = (await res.json()) as { id: string; webViewLink?: string };
+      return { id: out.id, created: false, webViewLink: out.webViewLink ?? null };
+    }
+    // 404 = he deleted it; 403 = we no longer own it. Both mean "write it fresh" rather than fail.
+    if (res.status !== 404 && res.status !== 403) {
+      throw new Error(`Drive doc update failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+    }
+  }
+
+  const res = await send('POST', '', { name: params.title, mimeType: DOC_MIME, parents: [params.folderId] });
+  if (!res.ok) throw new Error(`Drive doc create failed (${res.status}): ${(await res.text()).slice(0, 200)}`);
+  const out = (await res.json()) as { id: string; webViewLink?: string };
+  return { id: out.id, created: true, webViewLink: out.webViewLink ?? null };
+}

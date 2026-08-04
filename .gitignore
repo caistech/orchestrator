@@ -11,3 +11,8 @@ next-env.d.ts
 
 .vercel
 .env*
+
+# Incremental TypeScript build cache — a machine-local artifact that churns on every
+# typecheck. Tracked by accident; it is not source and its diffs are noise.
+tsconfig.tsbuildinfo
+*.tsbuildinfo

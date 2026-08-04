@@ -85,6 +85,7 @@ async function searchBook(
   path: 'people:searchContacts' | 'otherContacts:search',
   query: string,
   source: ContactMatch['source'],
+  warm = true,
 ): Promise<ContactMatch[]> {
   const call = async (q: string) => {
     const url = new URL(`${PEOPLE_API}/${path}`);
@@ -102,13 +103,61 @@ async function searchBook(
     throw new Error(`People API ${path} failed (${res.status}): ${(await res.text()).slice(0, 160)}`);
   }
   let found = matchesFrom((await res.json()) as PeopleResult, source);
-  if (found.length === 0) {
+  // `warm: false` for the per-word retries below — the whole-query attempt has already warmed this
+  // session's cache, and repeating it once per word turns one fallback into a dozen round trips
+  // inside a live call.
+  if (found.length === 0 && warm) {
     await call(''); // warm the cache
     res = await call(query);
     if (!res.ok) return [];
     found = matchesFrom((await res.json()) as PeopleResult, source);
   }
   return found;
+}
+
+/** Both granted books, one term. Rejections are the caller's to interpret — see resolveRecipientByName. */
+function searchBooks(
+  accessToken: string,
+  granted: { contacts: boolean; otherContacts: boolean },
+  term: string,
+  warm: boolean,
+): Promise<PromiseSettledResult<ContactMatch[]>[]> {
+  const books: Promise<ContactMatch[]>[] = [];
+  if (granted.contacts) books.push(searchBook(accessToken, 'people:searchContacts', term, 'saved', warm));
+  if (granted.otherContacts) books.push(searchBook(accessToken, 'otherContacts:search', term, 'other', warm));
+  return Promise.allSettled(books);
+}
+
+/**
+ * Words that carry no signal in "Roger from Quantum Surveying".
+ *
+ * Deliberately short. A word wrongly treated as noise is a word we stop searching on, and the cost
+ * of keeping a useless one is one extra query that matches nothing.
+ */
+const NOISE_WORDS = new Set(['at', 'from', 'the', 'of', 'and', 'in', 'on', 'for', 'with', 'to', 'a', 'an', 'mr', 'mrs', 'ms', 'dr']);
+
+/** Bounds the fallback: four words is more than anyone says, and each one is a round trip. */
+const MAX_TERMS = 4;
+
+/**
+ * The words worth searching for individually.
+ *
+ * Exported for the same reason it exists: the behaviour that broke was invisible until someone
+ * looked at what got sent to Google, so the splitting is testable on its own.
+ */
+export function searchTerms(query: string): string[] {
+  const seen = new Set<string>();
+  const terms: string[] = [];
+  for (const raw of query.split(/[\s,]+/)) {
+    const term = raw.trim();
+    if (term.length < 2) continue;
+    const key = term.toLowerCase();
+    if (NOISE_WORDS.has(key) || seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+    if (terms.length === MAX_TERMS) break;
+  }
+  return terms;
 }
 
 export type RecipientResolution =
@@ -165,11 +214,7 @@ export async function resolveRecipientByName(
     return { status: 'unavailable', reason: (error as Error).message };
   }
 
-  const books: Promise<ContactMatch[]>[] = [];
-  if (granted.contacts) books.push(searchBook(accessToken, 'people:searchContacts', query, 'saved'));
-  if (granted.otherContacts) books.push(searchBook(accessToken, 'otherContacts:search', query, 'other'));
-
-  const settled = await Promise.allSettled(books);
+  const settled = await searchBooks(accessToken, granted, query, true);
   const failures = settled.filter((s) => s.status === 'rejected');
   const matches = dedupe(settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : [])));
 
@@ -180,7 +225,66 @@ export async function resolveRecipientByName(
     return { status: 'unavailable', reason: 'the contact lookup did not answer' };
   }
 
-  if (matches.length === 0) return { status: 'none' };
+  if (matches.length === 0) return byWord(accessToken, granted, query);
   if (matches.length === 1) return { status: 'resolved', match: matches[0] };
   return { status: 'ambiguous', matches: matches.slice(0, 5) };
+}
+
+/**
+ * The second attempt, one word at a time — and the reason this file was reopened.
+ *
+ * People API matches the query as ONE string against a field. It has no idea that "Roger Quantum
+ * Surveying" is a person and a firm, so it looks for that literal text, finds it nowhere, and
+ * answers zero. Which is exactly what happened on 4 August: the owner asked for Roger from Quantum
+ * Surveying, the tool ran, and it returned an honest, correct, useless nothing — while
+ * `Roger Hunt <rogerh@quantumsurveys.com.au>` sat in the book matching two of the three words.
+ *
+ * The failure is worse than a missing feature because the contract above is working perfectly. A
+ * zero with `ok: true` MEANS "I looked and he isn't there", so nothing downstream can tell this
+ * apart from a genuine absence. She believed it, could not square it with knowing the man exists,
+ * and concluded she must have lost access to the account — a theory about a connection that was
+ * fine, which then got written to memory as a fact. One un-tokenised query, and the product's own
+ * record of the business is wrong.
+ *
+ * SCORING, RATHER THAN OR-ING THE WORDS. A plain union returns every Chris in the book for "Chris
+ * Newton". Counting how many of the spoken words each contact answers to puts the one who matches
+ * both at the top and leaves the coincidences below it.
+ *
+ * TWO WORDS IS AN IDENTIFICATION; ONE IS A GUESS. A contact matching two or more of the words is
+ * returned `resolved`, and dispatch fills the address in from it. A contact matching only one comes
+ * back `ambiguous` however alone it stands — it asks instead of assuming, because "the only Chris I
+ * have" is not the same claim as "Chris Newton", and the read-back is the last thing standing
+ * between a wrong lookup and a quote landing at a stranger's address.
+ */
+async function byWord(
+  accessToken: string,
+  granted: { contacts: boolean; otherContacts: boolean },
+  query: string,
+): Promise<RecipientResolution> {
+  const terms = searchTerms(query);
+  // One word means the whole-query search already WAS the per-word search. Nothing left to try.
+  if (terms.length < 2) return { status: 'none' };
+
+  const perTerm = await Promise.all(terms.map((t) => searchBooks(accessToken, granted, t, false)));
+
+  const scored = new Map<string, { match: ContactMatch; words: number }>();
+  for (const settled of perTerm) {
+    // dedupe first: one contact found in BOTH books by ONE word must count once, or being in two
+    // books would outrank actually matching two words.
+    const found = dedupe(settled.flatMap((s) => (s.status === 'fulfilled' ? s.value : [])));
+    for (const match of found) {
+      const key = match.email.toLowerCase();
+      const existing = scored.get(key);
+      if (existing) existing.words += 1;
+      else scored.set(key, { match, words: 1 });
+    }
+  }
+
+  if (scored.size === 0) return { status: 'none' };
+
+  const best = Math.max(...[...scored.values()].map((s) => s.words));
+  const winners = [...scored.values()].filter((s) => s.words === best).map((s) => s.match);
+
+  if (best >= 2 && winners.length === 1) return { status: 'resolved', match: winners[0] };
+  return { status: 'ambiguous', matches: winners.slice(0, 5) };
 }

@@ -61,12 +61,30 @@ That is the whole surface. Everything else is an adapter concern.
 
 ## Adapters, in build order
 
-| # | Adapter | Why this order |
-|---|---|---|
-| 1 | **`download`** | Zip of HTML/PDF, no account, no vendor. The anti-lock guarantee and the only one that can never break. Built first so the promise is true from day one. |
-| 2 | **`drive`** | The one live connection uses it, and the scopes are already there. |
-| 3 | **`onedrive`/SharePoint** | Probably the bigger SME reality — a lot of trade businesses are on Microsoft 365, not Google. Currently unbuilt anywhere (Kira register B17 notes the gap). |
-| 4 | **`push-api`** | For a customer who already runs an enterprise knowledge layer. See below. |
+| # | Adapter | Why this order | Status |
+|---|---|---|---|
+| 1 | **`download`** | No account, no vendor. The anti-lock guarantee and the only one that can never break. Built first so the promise is true from day one. | ✅ **built — but NOT behind this port. See below.** |
+| 2 | **`drive`** | The one live connection uses it, and the scopes are already there. | ✅ `ensureFolder` + `upsertDoc` (2026-08-05) |
+| 3 | **`onedrive`/SharePoint** | Probably the bigger SME reality — a lot of trade businesses are on Microsoft 365, not Google. Currently unbuilt anywhere (Kira register B17 notes the gap). | — |
+| 4 | **`push-api`** | For a customer who already runs an enterprise knowledge layer. See below. | — |
+
+### ⚠️ Amendment (2026-08-05): `download` lives in KIRA, not behind this port
+
+Written into the plan as adapter 1 here, and built somewhere else. Recording the correction rather
+than letting the doc quietly diverge from the code, because a design doc nobody trusts is worse than
+none.
+
+**Why the change:** the port exists to hold *credentials* the calling side must not have. A download
+involves none — Kira has already rendered the bytes, and routing them out to the orchestrator so
+they can come back and be streamed to the browser is a hop that buys nothing and adds a failure
+mode. It ships as `GET /api/genome/manual?audience=owner|buyer` in Kira.
+
+**What that costs, stated honestly:** Kira now knows about exactly one destination, so the "the
+caller has no opinion about the vendor" property is not quite absolute. It is bounded and it is the
+right trade — the one destination Kira knows is the one that *is* no vendor.
+
+**The rule this leaves:** anything needing a token goes behind the port. Anything needing nothing
+does not.
 
 ## On Glean and its kind
 
@@ -87,18 +105,22 @@ of them can generate for themselves, since it never existed in a document to be 
 
 ## What has to change here
 
-1. **`src/connectors/google.ts`** — add `ensureFolder` and `upsertDoc`. Note the file's own warning in
-   reverse: native Docs have no bytes to download and must be **exported** to read; to write, upload
-   HTML with `mimeType: application/vnd.google-apps.document` and let Google convert. HTML is the
-   reliable direction; markdown is not.
-2. **`src/record/`** — the port, the registry, and the `download` adapter.
+1. ~~**`src/connectors/google.ts`** — add `ensureFolder` and `upsertDoc`.~~ ✅ **Done 2026-08-05.**
+   The file's own warning applied in reverse: native Docs have no bytes to download and must be
+   **exported** to read; to write, upload HTML and let Drive convert. Markdown does not convert; a
+   PDF leaves an owner a document he cannot edit, which stops being current the day it is written.
+   `ensureFolder` finds before it creates — Drive keys on id, not name, so create-first accumulates
+   one folder per run. `upsertDoc` treats a 404/403 on the stored id as "he deleted it, write it
+   again" rather than as a failure. `driveQuoted` escapes the query string, because "O'Brien
+   Plumbing" is not an exotic trading name.
+2. **`src/record/`** — the port and the registry. (`download` is NOT here — see the amendment above.)
 3. **`app/api/v1/tenants/[tenantId]/record/`** — one endpoint, same shared-secret auth as `lookup`.
-4. **The default Drive access — change `readonly` → `picked` before a second owner connects.**
-   `app/api/connect/google/route.ts:45` and `callback/route.ts:66` both default to `readonly`, which
-   is the only level that **cannot** write. `picked` (`drive.file`) can, grants access to nothing the
-   app did not create, and — per the connector's own comment — avoids the Google verification and
-   third-party security assessment that `drive`/`drive.readonly` drag behind them. Least privilege,
-   least paperwork and write-capable is a rare alignment; take it.
+   **This is the remaining gap: the write functions exist and nothing can call them yet.**
+4. ~~**The default Drive access — change `readonly` → `picked` before a second owner connects.**~~
+   ✅ **Done 2026-08-05**, while exactly one owner was connected (on `full`, so unaffected). Both
+   sites moved — the consent route's `DEFAULT_DRIVE_ACCESS` and the callback's own fallback, which
+   must agree or the label shown to the owner describes a different access level from the one he was
+   sent to grant. What was GRANTED is still read back from the token response, never assumed.
 
 ## Verified facts this rests on (2026-08-05, not assumed)
 

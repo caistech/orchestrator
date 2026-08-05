@@ -114,8 +114,15 @@ of them can generate for themselves, since it never existed in a document to be 
    again" rather than as a failure. `driveQuoted` escapes the query string, because "O'Brien
    Plumbing" is not an exotic trading name.
 2. **`src/record/`** — the port and the registry. (`download` is NOT here — see the amendment above.)
-3. **`app/api/v1/tenants/[tenantId]/record/`** — one endpoint, same shared-secret auth as `lookup`.
-   **This is the remaining gap: the write functions exist and nothing can call them yet.**
+   **Still unbuilt, deliberately** — see "Still open" at the foot of this document.
+3. ~~**`app/api/v1/tenants/[tenantId]/record/`** — one endpoint, same shared-secret auth as
+   `lookup`.~~ ✅ **Done 2026-08-05.** Refuses `readonly` in words rather than as a 403, because that
+   scope is real, granted and working and simply cannot create — a permission error there reads as a
+   fault rather than as a permission the owner never gave. Writes sequentially (nine concurrent
+   multipart uploads on one token trips the rate limit, and a partial failure there leaves some areas
+   current and some stale with nothing saying which), reports per-document outcomes so one failure
+   does not discard the refs that stop the next run duplicating, and returns `ok` **only when every
+   document landed** — "filed" is a claim the owner acts on by sending someone to the folder.
 4. ~~**The default Drive access — change `readonly` → `picked` before a second owner connects.**~~
    ✅ **Done 2026-08-05**, while exactly one owner was connected (on `full`, so unaffected). Both
    sites moved — the consent route's `DEFAULT_DRIVE_ACCESS` and the callback's own fallback, which

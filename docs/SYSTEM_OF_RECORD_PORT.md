@@ -141,3 +141,36 @@ A probe script selected a column that does not exist; PostgREST failed the whole
 `data: null`, and the script discarded the error. It read exactly like "there is no connection". Any
 script here **prints the error**, never just the data — the failures that cost the most this week
 were all checks that reported nothing and were read as reporting absence.
+
+---
+
+## Built, 2026-08-05 — and verified in a real Drive
+
+`ensureFolder` + `upsertDoc` in `src/connectors/google.ts`, `POST /v1/tenants/:id/record`, and the
+`picked` scope default. Proven end to end rather than described: **ten documents filed into a real
+Google Drive, a second run updating them in place rather than duplicating, and the result read back
+out through the READ path** — a different code path from the one that wrote it.
+
+Three things that reading the code would not have told you, kept here because the next adapter will
+meet all three:
+
+1. **A `<span>` with `display:block` does not survive the import.** Google Docs turns it into an
+   inline run and discards the CSS, so every fact collided with its own provenance —
+   *"…in Geraldton.stated 31 July 2026"* — in the document a buyer's accountant opens. Block-ness has
+   to be in the ELEMENT. **General rule for any destination: presentation that depends on our CSS is
+   presentation we do not control.**
+2. **Find before create, always.** Drive keys on id, not name, and will hold two folders with the
+   same name in the same parent.
+3. **A 404 on a stored id is not an error.** He deleted the file; the right answer is to write it
+   again, not to fail the run and leave a gap in his manual. 403 takes the same path.
+
+**The verification standard this sets:** our database recording "written" is a report. Reading the
+artefact back out of the destination is the effect, and it is the only check that finds a defect
+which lives in someone else's importer.
+
+### Still open
+
+`src/record/` — the port and the registry — is **not built**. `/record` calls the Google connector
+directly today, which is honest for one adapter and becomes the wrong shape at two. Build the port
+when OneDrive or a push target is added, not before: a one-implementation abstraction is a guess
+about the second implementation.

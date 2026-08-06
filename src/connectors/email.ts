@@ -25,6 +25,8 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createEmailSender } from '@caistech/email-send';
+
+import { checkCommercialJurisdiction } from '../jurisdiction';
 import { formatAbn } from '@caistech/abn-lookup';
 import { notifyCaller } from '../callback';
 import { renderEmail } from './email-render';
@@ -163,6 +165,29 @@ export async function drainEmailOutbox(opts: DrainOptions): Promise<DrainReport>
       report.refused += 1;
       report.details.push({ subject, outcome: 'REFUSED', detail: 'no recipient on the effect' });
       continue;
+    }
+
+    // ── JURISDICTION ──────────────────────────────────────────────────────────────────────────
+    // PRODUCT_STANDARDS §9: email outreach is cleared for AUSTRALIA ONLY, and until today nothing
+    // enforced it — `assertJurisdictionAllowed` shipped in @caistech/email-compliance 0.2.0 and was
+    // called from nowhere. Any owner could have Kira email any country.
+    //
+    // COMMERCIAL ONLY, which is the whole design — see src/jurisdiction.ts. The guard throws on an
+    // unknown country as well as a disallowed one, and nothing here tags contacts, so applying it
+    // to every send would refuse an Australian tradesman emailing an Australian client at
+    // @gmail.com. That is an outage wearing compliance as a costume. Transactional mail — a quote he
+    // was asked for, a reply, chasing an invoice — is recipient-initiated inside an existing
+    // relationship and exempt or consent-inferred in every regime this is about.
+    //
+    // REFUSED, NOT FAILED, and placed here for that reason: the row stays `pending`, so if the
+    // clearance changes the message goes out with nothing re-derived and nothing retyped.
+    if (commercial) {
+      const verdict = checkCommercialJurisdiction(to);
+      if (!verdict.allowed) {
+        report.refused += 1;
+        report.details.push({ subject, outcome: 'REFUSED', detail: verdict.reason ?? 'jurisdiction not cleared' });
+        continue;
+      }
     }
 
     if (dryRun) {

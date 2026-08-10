@@ -7,6 +7,8 @@
   "scripts": {
     "sweep": "tsx scripts/sweep.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check:auth": "tsx scripts/check-caller-auth.ts",
     "drain": "tsx scripts/drain.ts",
     "dev": "next dev",
     "build": "next build",
@@ -25,10 +27,12 @@
     "server-only": "^0.0.1"
   },
   "devDependencies": {
+    "@caistech/portfolio-gate": "^0.17.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "tsx": "^4.19.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
   }
 }

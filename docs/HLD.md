@@ -81,7 +81,7 @@ Two things in that picture carry most of the design weight:
 | **Sweeper + rules** | *What is due?* | `src/sweeper.ts`, `src/rules.ts` | Built. 7 of ~20 rules written. |
 | **Delegation gate** | *Who must approve it?* | `src/gate.ts`, `delegation_policy` table | Built. Bands are tenant data. |
 | **Drafter** | *What exactly do we say?* | `src/drafter.ts` | Built. One agent, three owned kinds. |
-| **Outbox + drain** | *Did it actually happen?* | `effects` table, `app/api/cron/drain` | Built. **One executor only: `email.send`.** |
+| **Outbox + drain** | *Did it actually happen?* | `effects` table, `app/api/cron/drain`, `config/tools.json` | Built. Register-driven since 2026-08-11; one executor bound so far (`email.send`). |
 
 Everything else — the API surface, the operator UI, the connectors — serves these four.
 
@@ -125,10 +125,11 @@ in the code. The inventory is thin:
 | **Write a Drive doc** | effect | — | `record` endpoint | **Built** — *not routed through the outbox*, see §8 |
 | `invoice.create`, `calendar.book`, document generation, payments | effect | — | — | **Absent** (the `effects.kind` column is open text and already documents these as examples) |
 
-> ⚠️ **The single most important fact in this table: `effects.kind` is an open text column that can
-> describe any effect, and the drain only ever queries `kind = 'email.send'`.** An effect of any
-> other kind inserted today would sit in the outbox forever, with every screen looking healthy. That
-> is the gap §7 closes.
+> ✅ **CLOSED 2026-08-11.** Until then, `effects.kind` was an open text column that could describe any
+> effect while the drain only ever queried `kind = 'email.send'` — so an effect of any other kind sat
+> in the outbox forever with every screen looking healthy. The drain now asks the **tool register**
+> what it can execute and reports, loudly, anything pending that it cannot. Adding a tool is a config
+> entry plus a bound executor; the drain is not edited. See `docs/LLD.md` §6.2.
 
 ### 4.3 Agents (the things that use a model)
 
@@ -208,27 +209,27 @@ The codebase already made this choice **three times**, and each time it made the
 | Sweep rules (flows) | `RULES` array, `src/rules.ts` | one object |
 | Delegation bands | `delegation_policy.bands`, per tenant, in the DB | one row edit |
 | Callers | `ORCHESTRATOR_CALLERS` env JSON | one env change, no deploy |
+| **Tools / effect executors** | `config/tools.json` + a bound executor | one entry + one function; `check:tools` fails if they disagree |
 
 And it has **not** made that choice twice — which is exactly the gap:
 
 | Thing | Where it lives today | Adding one costs |
 |---|---|---|
 | **Connections** | hardcoded: 2 route files + a client module + a hardcoded link in `/connections` | ~4 files, a deploy, and a UI edit that is easy to forget |
-| **Tools / effect executors** | hardcoded: the drain queries `kind = 'email.send'` and calls one function | editing the cron route — and forgetting to leaves effects stuck silently |
 
 **The design principle to apply is the one already in `EXECUTION_LAYER.md` §16.2: a `tool_register`
 as a first-class artifact.** The recommendation is two registries, mirroring the three that work:
 
-1. **A connector manifest** — one declarative file per provider (auth URLs, scope sets, the token
-   shape, what it can confirm), consumed by *one* generic OAuth route pair and *one* connections UI
-   that renders whatever is registered. What stays code is the small per-provider part that genuinely
-   differs: parsing that vendor's records.
-2. **A tool register** — one declarative entry per effect kind, mapping `effects.kind` → executor,
-   required connection, gate class (read vs effect), and the flows it unlocks. The drain iterates the
-   register instead of naming one kind.
+1. ✅ **A tool register — BUILT.** One declarative entry per effect kind (class, connector,
+   requirements, retries, flows unlocked) plus a statically-bound executor. The drain iterates the
+   register instead of naming a kind, and reports anything pending it cannot execute.
+2. **A connector manifest — still Proposed.** One declarative file per provider (auth URLs, scope
+   sets, token shape, what it can confirm), consumed by *one* generic OAuth route pair and *one*
+   connections UI that renders whatever is registered. What stays code is the part that genuinely
+   differs: parsing that vendor's records. Worth building when the **third** provider arrives — two
+   do not prove an abstraction.
 
-Concrete schemas, the file layout, and what must remain code are in **`docs/LLD.md` §6**. This is a
-**design, not an implementation** — neither registry exists yet.
+Concrete schemas and what must remain code are in **`docs/LLD.md` §6**.
 
 Two constraints on any such registry, both learned here rather than assumed:
 
@@ -244,18 +245,18 @@ Two constraints on any such registry, both learned here rather than assumed:
 
 ## 8. Known gaps, in priority order
 
-1. **The drain handles one effect kind.** Any other kind is inserted and never executed. Closing this
-   *is* the tool register (§7).
-2. **The Drive write path does not go through the outbox.** It is a direct endpoint, so it bypasses
+1. **The Drive write path does not go through the outbox.** It is a direct endpoint, so it bypasses
    the "propose, then a separate dispatcher performs" inversion that every other effect obeys. It
    should become an effect kind.
-3. **Per-tenant `live` flag.** The cron drains every tenant with pending effects. What stops a real
+2. **Per-tenant `live` flag.** The cron drains every tenant with pending effects. What stops a real
    business's mail going out is that it has no `delegation_policy` row, so everything holds. That is
    protection by omission, not by decision.
-4. **13 of the ~20 threshold rules unwritten** — they need entity kinds no connector feeds yet.
-5. **Agentic and assisted runtimes absent** — ~25% of registry flows.
-6. **`tool_register` table does not exist**, so the coverage map in `EXECUTION_LAYER.md` §16 cannot be
-   computed, only described.
+3. **13 of the ~20 threshold rules unwritten** — they need entity kinds no connector feeds yet.
+4. **Agentic and assisted runtimes absent** — ~25% of registry flows.
+5. **The register covers TOOLS, not the wider software estate.** `EXECUTION_LAYER.md` §16.2's
+   `tool_register` also tracks discovered third-party systems (`paid_but_idle`, `evidence`,
+   `adapter`). `config/tools.json` covers what we can *perform*; the discovery half is still absent,
+   so the coverage map remains described rather than computed.
 
 ---
 
@@ -280,7 +281,9 @@ src/
   callback.ts     the return leg to the caller
   connect-token.ts  signed ticket so a caller can start a consent flow
   jurisdiction.ts   AU-only commercial mail (18 tests)
+  tools/          register.ts (loads config/tools.json) · executors.ts (kind → executor)
   connectors/     email · email-render · xero · xero-read · google · google-contacts
+config/tools.json THE TOOL REGISTER — what this system may do to the world, as data
 db/               001–007, idempotent SQL, RLS on every table
 docs/             HLD.md (this) · LLD.md · SYSTEM_OF_RECORD_PORT.md
 ```
@@ -293,7 +296,8 @@ Design intent lives in the root markdown files (`ORCHESTRATOR_SPEC.md`, `EXECUTI
 ## 10. Verification
 
 CI (`.github/workflows/gate.yml`) runs on every PR, every push to main, and **daily** — typecheck,
-tests, the caller-auth boundary checks, build, then `portfolio-gate-deploy-status`, which asserts
+tests, the caller-auth boundary checks, the tool-register checks, build, then
+`portfolio-gate-deploy-status`, which asserts
 that production is running the commit we think it is. The daily run matters as much as the push one:
 the outage that check exists for was a credential that expired *between* pushes, so no commit would
 have caught it.

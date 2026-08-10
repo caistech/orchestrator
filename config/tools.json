@@ -1,0 +1,38 @@
+{
+  "$comment": [
+    "THE TOOL REGISTER — the declarative half of what this system can do to the world.",
+    "",
+    "EXECUTION_LAYER.md §16.2 specified this as a first-class artifact; docs/LLD.md §6.2 designs it.",
+    "Before it existed, the drain queried exactly one effect kind, so an effect of any other kind was",
+    "accepted, stored and never executed — with every screen looking healthy. Registering a kind here",
+    "is what makes it executable.",
+    "",
+    "ONE FILE, not one file per tool, and deliberately. A serverless bundle cannot glob a directory at",
+    "runtime, so per-file tools would need an index someone must remember to update — the same",
+    "forgettable step that leaves a connector wired and invisible in the connections UI.",
+    "",
+    "This file holds FACTS ABOUT a tool. The executor itself is bound in code, in",
+    "src/tools/executors.ts, because a string path cannot be statically bundled and a tool that",
+    "resolves at runtime fails in production rather than in CI. `npm run check:tools` asserts the two",
+    "agree.",
+    "",
+    "class: 'effect' does NOT put a tool in a handler's tool set. Handlers emit effects; the drain",
+    "performs them. That inversion is what makes the approval gates structurally true, and no entry",
+    "here can loosen it."
+  ],
+  "version": 1,
+  "tools": [
+    {
+      "kind": "email.send",
+      "class": "effect",
+      "label": "Send an email",
+      "connector": "resend",
+      "requiresConnection": false,
+      "requiresSenderIdentity": true,
+      "idempotent": true,
+      "maxAttempts": 3,
+      "flowsUnlocked": ["9", "19", "45", "46", "56", "67", "127"],
+      "notes": "Sends as the TENANT's legal identity, never ours. Commercial mail is refused without an unsubscribe URL, and non-AU recipients hard-block."
+    }
+  ]
+}

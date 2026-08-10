@@ -1,34 +1,36 @@
-// Every 15 minutes: drain the outbox. Separated from the sweep on purpose — deciding and sending
-// are different failure domains, and a mail outage must not stop the system noticing what is due.
+// Every 15 minutes: drain the outbox. Separated from the sweep on purpose — deciding and sending are
+// different failure domains, and a mail outage must not stop the system noticing what is due.
 //
-// THIS USED TO SEND FOR ONE TENANT ONLY.
+// THIS USED TO KNOW ABOUT EXACTLY ONE EFFECT KIND.
 //
-// `tenantId: SEED_TENANT` was hardcoded here, so the dev tenant's seeded traffic drained daily and
-// no real customer's mail was ever sent — not because anything failed, but because the drain was
-// never asked to look. STATE.md called that "a safeguard by construction, not by intent", and it was
-// exactly right: it protected only because a constant pointed somewhere harmless. Four emails the
-// owner had APPROVED BY VOICE on 28 July, including a $60,000 quote to a client, sat pending behind
-// it for three days while every screen looked healthy.
+// The query was `.eq('kind', 'email.send')` and the call was one function. `effects.kind` is open
+// text and its own column comment lists `invoice.create | calendar.book | …` as intended values — so
+// an effect of any other kind was accepted, stored, and never executed. No error, no retry, no
+// alert: status stayed `pending` and every screen looked healthy. Adding a tool meant remembering to
+// edit this file, and NOT remembering was silent.
 //
-// It now drains every tenant that actually has something pending, which makes two properties
-// load-bearing:
+// It now asks the TOOL REGISTER (config/tools.json) what it can execute, and — the part that matters
+// more — it counts and names anything pending that the register does not cover. An unregistered kind
+// is now loud. A check that quietly does nothing is indistinguishable from one that passed, which is
+// how this repo lost four approved emails for three days and a month of deploys to silence.
 //
-//  1. PER-TENANT ISOLATION. drainEmailOutbox THROWS when a tenant has no sender identity — the right
-//     call for one tenant, and fatal for a run across many, because a single un-onboarded business
-//     would abort the batch and nobody else's mail would go either. Each tenant is drained inside
-//     its own try/catch, so a failure stops at that tenant.
+// TWO PROPERTIES THAT REMAIN LOAD-BEARING, both learned the hard way:
+//
+//  1. PER-TENANT ISOLATION. An executor may throw for one tenant; before the per-tenant try/catch a
+//     single un-onboarded business aborted the batch and nobody else's mail went either.
 //  2. AN UNCONFIGURED TENANT IS A SKIP, NOT AN ERROR. A business part-way through onboarding is an
-//     expected state, not an incident. It is reported as `skipped` with a reason so the count stays
-//     visible, rather than logged as a failure that trains everyone to ignore the log.
+//     expected state. Reported with a reason so the count stays visible, rather than logged as a
+//     failure that trains everyone to ignore the log.
 //
-// What still gates a send — so that un-pinning this changed nothing about WHAT may go out: an effect
-// row only ever exists after an approval (the v1 approve route, or the queue action) or because the
-// sweeper's router put the task in a notify band that needs none. This drain sends what was already
-// decided. It decides nothing.
+// What still gates a send — so that generalising this changed nothing about WHAT may go out: an
+// effect row only ever exists after an approval (the v1 approve route, or the queue action) or
+// because the sweeper's router put the task in a notify band that needs none. This drain performs
+// what was already decided. It decides nothing, and registering a tool does not change that.
 
 import { NextResponse } from 'next/server';
-import { drainEmailOutbox, type DrainReport } from '@/src/connectors/email';
 import { serviceClient } from '@/lib/supabase';
+import { executableKinds, toolFor } from '@/src/tools/register';
+import { executorFor } from '@/src/tools/executors';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,22 +40,18 @@ const TENANT_LIMIT = 50;
 
 interface TenantOutcome {
   tenantId: string;
+  kind: string;
   outcome: 'drained' | 'skipped' | 'error';
   sent?: number;
   failed?: number;
   refused?: number;
-  /** Sent on the portfolio default because this tenant has no verified domain of its own. */
   fallbackFrom?: boolean;
   reason?: string;
 }
 
-/**
- * A missing sender identity is the one failure here that is routine rather than exceptional, so it
- * is matched on the connector's own message and reported as a skip. Matched narrowly on purpose:
- * anything else that throws is a real error and must not be quietly filed as "not onboarded yet".
- */
-function isIdentityGap(error: unknown): boolean {
-  return error instanceof Error && error.message.startsWith('tenant sender identity incomplete');
+interface PendingRow {
+  kind: string;
+  tasks: { tenant_id: string } | null;
 }
 
 export async function GET(request: Request) {
@@ -62,83 +60,135 @@ export async function GET(request: Request) {
   if (request.headers.get('authorization') !== `Bearer ${secret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) return NextResponse.json({ error: 'RESEND_API_KEY unset' }, { status: 503 });
 
   const supabase = serviceClient();
 
-  // Ask which tenants have something waiting rather than assuming. `effects` has no tenant column —
-  // it hangs off tasks — so the join is the tenancy boundary here, exactly as it is inside the drain.
+  // Ask what is pending across ALL kinds, not just the ones we can run. Filtering in the query would
+  // reproduce the original defect in a new place: the rows we cannot execute are exactly the rows
+  // worth knowing about, and a query that never selects them can never report them.
   const { data: pending, error } = await supabase
     .from('effects')
-    .select('tasks!inner(tenant_id)')
-    .eq('status', 'pending')
-    .eq('kind', 'email.send');
+    .select('kind, tasks!inner(tenant_id)')
+    .eq('status', 'pending');
 
   if (error) {
-    console.error('[cron/drain] could not list pending tenants:', error);
+    console.error('[cron/drain] could not list pending effects:', error);
     return NextResponse.json({ error: 'Database error' }, { status: 500 });
   }
 
-  const tenantIds = [
-    ...new Set(
-      ((pending ?? []) as unknown as Array<{ tasks: { tenant_id: string } | null }>)
-        .map((row) => row.tasks?.tenant_id)
-        .filter((id): id is string => Boolean(id)),
-    ),
-  ];
+  const rows = (pending ?? []) as unknown as PendingRow[];
+  const runnable = new Set(executableKinds());
 
-  const truncated = tenantIds.length > TENANT_LIMIT;
-  const batch = tenantIds.slice(0, TENANT_LIMIT);
+  // (kind → tenants) for what we can run, and a plain count for what we cannot.
+  const work = new Map<string, Set<string>>();
+  const unregistered = new Map<string, number>();
 
-  const totals = { sent: 0, failed: 0, refused: 0, skipped: 0, errors: 0 };
-  const tenants: TenantOutcome[] = [];
-
-  for (const tenantId of batch) {
-    try {
-      const report: DrainReport = await drainEmailOutbox({
-        supabase,
-        tenantId,
-        apiKey,
-        from: process.env.EMAIL_FROM,
-        unsubscribeBaseUrl: process.env.UNSUBSCRIBE_BASE_URL,
-        redirectTo: process.env.EMAIL_REDIRECT_TO,
-      });
-      totals.sent += report.sent;
-      totals.failed += report.failed;
-      totals.refused += report.refused;
-      tenants.push({
-        tenantId,
-        outcome: 'drained',
-        sent: report.sent,
-        failed: report.failed,
-        refused: report.refused,
-        // Surfaced per tenant rather than aggregated: "some mail went out on our domain" is not
-        // actionable, "THIS tenant's did" is.
-        ...(report.usedFallbackFrom && report.sent > 0 ? { fallbackFrom: true } : {}),
-      });
-    } catch (caught) {
-      if (isIdentityGap(caught)) {
-        totals.skipped += 1;
-        tenants.push({
-          tenantId,
-          outcome: 'skipped',
-          reason: 'no sender identity yet — the owner has not finished setting up their business',
-        });
-        continue;
-      }
-      // One tenant's problem stops at that tenant. Before this loop existed, it stopped everyone's.
-      totals.errors += 1;
-      console.error(`[cron/drain] ${tenantId} failed:`, caught);
-      tenants.push({ tenantId, outcome: 'error', reason: caught instanceof Error ? caught.message : String(caught) });
+  for (const row of rows) {
+    const tenantId = row.tasks?.tenant_id;
+    if (!tenantId) continue;
+    if (runnable.has(row.kind)) {
+      const set = work.get(row.kind) ?? new Set<string>();
+      set.add(tenantId);
+      work.set(row.kind, set);
+    } else {
+      unregistered.set(row.kind, (unregistered.get(row.kind) ?? 0) + 1);
     }
   }
 
-  // Say what was left behind. A bound that truncates silently reads as "everything was covered".
-  if (truncated) {
-    console.warn(`[cron/drain] ${tenantIds.length} tenants pending, drained ${batch.length} — the rest go next run.`);
+  // LOUD, not silent. This is the entire reason the register exists: a kind nothing can execute used
+  // to be indistinguishable from no work at all.
+  if (unregistered.size > 0) {
+    for (const [kind, count] of unregistered) {
+      console.error(
+        `[cron/drain] ${count} pending effect(s) of kind "${kind}" — NOT in the tool register, so ` +
+          `nothing will ever execute them. Register it in config/tools.json and bind an executor in ` +
+          `src/tools/executors.ts.`,
+      );
+    }
   }
 
-  console.log('[cron/drain]', { tenantsPending: tenantIds.length, ...totals });
-  return NextResponse.json({ tenantsPending: tenantIds.length, truncated, ...totals, tenants });
+  const totals = { sent: 0, failed: 0, refused: 0, skipped: 0, errors: 0 };
+  const tenants: TenantOutcome[] = [];
+  let truncatedAny = false;
+
+  for (const [kind, tenantSet] of work) {
+    const executor = executorFor(kind);
+    if (!executor) {
+      // Registered as executable but nothing bound. `npm run check:tools` fails on this in CI, so
+      // reaching it in production means the check was skipped — say so rather than passing silently.
+      console.error(
+        `[cron/drain] "${kind}" is class:effect in the register but has no executor bound. ` +
+          `check:tools should have caught this before deploy.`,
+      );
+      totals.errors += 1;
+      continue;
+    }
+
+    const ids = [...tenantSet];
+    const batch = ids.slice(0, TENANT_LIMIT);
+    if (ids.length > batch.length) {
+      truncatedAny = true;
+      // Say what was left behind. A bound that truncates silently reads as "everything was covered".
+      console.warn(
+        `[cron/drain] ${kind}: ${ids.length} tenants pending, draining ${batch.length} — the rest go next run.`,
+      );
+    }
+
+    for (const tenantId of batch) {
+      try {
+        const result = await executor({ supabase, tenantId });
+
+        if (result.skipped) {
+          totals.skipped += 1;
+          tenants.push({ tenantId, kind, outcome: 'skipped', reason: result.reason });
+          continue;
+        }
+
+        totals.sent += result.sent;
+        totals.failed += result.failed;
+        totals.refused += result.refused;
+        tenants.push({
+          tenantId,
+          kind,
+          outcome: 'drained',
+          sent: result.sent,
+          failed: result.failed,
+          refused: result.refused,
+          // Surfaced per tenant rather than aggregated: "some mail went out on our domain" is not
+          // actionable, "THIS tenant's did" is.
+          ...(result.usedFallbackFrom && result.sent > 0 ? { fallbackFrom: true } : {}),
+        });
+      } catch (caught) {
+        // One tenant's problem stops at that tenant. Before this existed, it stopped everyone's.
+        totals.errors += 1;
+        console.error(`[cron/drain] ${kind} ${tenantId} failed:`, caught);
+        tenants.push({
+          tenantId,
+          kind,
+          outcome: 'error',
+          reason: caught instanceof Error ? caught.message : String(caught),
+        });
+      }
+    }
+  }
+
+  const unregisteredReport = [...unregistered].map(([kind, pendingCount]) => ({ kind, pending: pendingCount }));
+
+  console.log('[cron/drain]', {
+    pendingEffects: rows.length,
+    kindsRun: [...work.keys()],
+    ...totals,
+    ...(unregisteredReport.length ? { unregistered: unregisteredReport } : {}),
+  });
+
+  return NextResponse.json({
+    pendingEffects: rows.length,
+    kindsRun: [...work.keys()],
+    truncated: truncatedAny,
+    ...totals,
+    // Always present when non-empty, at the top level, so it cannot be missed by anything reading
+    // this response — including a human skimming the cron log.
+    ...(unregisteredReport.length ? { unregistered: unregisteredReport } : {}),
+    tenants,
+  });
 }

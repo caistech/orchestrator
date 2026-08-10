@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "check:auth": "tsx scripts/check-caller-auth.ts",
+    "check:tools": "tsx scripts/check-tool-register.ts",
     "drain": "tsx scripts/drain.ts",
     "dev": "next dev",
     "build": "next build",

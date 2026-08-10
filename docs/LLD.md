@@ -19,6 +19,8 @@ exercised) · **Proposed** (designed here, no code).
 | `src/rules.ts` | 216 | The flows, as data. 7 of ~20. | Adding the 21st flow must not mean writing a 21st function. |
 | `src/gate.ts` | 79 | Bands resolve from the **action**, never the flow. | `reserved` is checked first and unconditionally. **Unknown actions hold.** |
 | `src/drafter.ts` | 177 | The one agent: classify, then draft. | Never sends. Refuses to invent a recipient. |
+| `src/tools/register.ts` | 120 | **The tool register** — loads and validates `config/tools.json`. | Validation throws; a quietly-skipped bad entry is the failure being prevented. |
+| `src/tools/executors.ts` | 105 | `kind → executor`, a **static** map. | Static because a dynamic import by string path is not bundled and fails in prod, not CI. |
 | `src/confirm.ts` | 65 | Source-of-record confirmation. | Unreachable ≠ contradicted: one goes to review, the other is dropped. |
 | `src/callback.ts` | 53 | The return leg to the caller. | Fail-soft: the mail has already left, so a down caller must not make a good send look failed. |
 | `src/connect-token.ts` | 65 | HMAC ticket so a caller can start a consent flow. | The tenant is a **claim**, not a query parameter. |
@@ -90,17 +92,25 @@ Two refusals worth knowing before you touch `drafter.ts`, both from real inciden
 - The `preview` is sent **verbatim**, so the prompt forbids placeholders. `Thanks, [Owner's Name]`
   reached a real client exactly once.
 
-### 2.3 The drain path (the only executor)
+### 2.3 The drain path (register-driven since 2026-08-11)
 
 ```
 cron/drain (15 min, Bearer CRON_SECRET)
-  ├─ SELECT effects → tasks(tenant_id) WHERE status='pending' AND kind='email.send'   ← ONE KIND
-  ├─ for each tenant (bounded to 50/run)
-  │    └─ drainEmailOutbox()  in its own try/catch
-  │         ├─ missing sender identity → SKIP with a reason (routine, not an incident)
-  │         └─ any other throw         → error, stops at THAT tenant
-  └─ report {sent, failed, refused, skipped, errors, truncated}
+  ├─ SELECT effects → tasks(tenant_id) WHERE status='pending'          ← EVERY kind, deliberately
+  ├─ partition by executableKinds() from the tool register
+  │    ├─ registered   → group by (kind, tenant)
+  │    └─ unregistered → count per kind, console.error, and REPORT at the top level
+  ├─ for each (kind, tenant), bounded to 50 tenants/run
+  │    └─ executorFor(kind)  in its own try/catch
+  │         ├─ result.skipped → SKIP with a reason (routine, not an incident)
+  │         └─ any throw      → error, stops at THAT tenant
+  └─ report {pendingEffects, kindsRun, sent, failed, refused, skipped, errors,
+             truncated, unregistered?, tenants[]}
 ```
+
+Selecting every kind and filtering in code is the deliberate choice: filtering in the query would
+reproduce the original defect in a new place, because the rows it cannot execute are exactly the rows
+worth knowing about.
 
 Per-tenant isolation is load-bearing: one un-onboarded business used to abort the batch, so nobody
 else's mail went either. Truncation is logged rather than silent — a bound that truncates quietly
@@ -208,22 +218,24 @@ Adding a provider today touches: `app/api/connect/<p>/route.ts`, `app/api/connec
 `app/connections/page.tsx`. Four files and a deploy, and the UI edit is the one that gets forgotten —
 a provider can be fully wired and invisible.
 
-### 5.2 Effect executors — the sharp one
+### 5.2 Effect executors — CLOSED 2026-08-11, see §6.2
 
-`app/api/cron/drain/route.ts` queries `.eq('kind', 'email.send')` and calls one function. The
-`effects.kind` column documents `invoice.create | calendar.book | …` as intended values.
+Until the tool register was built, `app/api/cron/drain/route.ts` queried `.eq('kind', 'email.send')`
+and called one function, while `effects.kind` documented `invoice.create | calendar.book | …` as
+intended values. **An effect of any other kind was accepted, stored, and never executed** — no error,
+no retry, no alert, `status` stuck at `pending` while every screen looked healthy. The same
+silent-failure shape that has already cost this repo twice: a hardcoded tenant constant that held
+four approved emails (including a $60,000 quote) for three days, and a month of failed deploys nobody
+saw because production kept serving.
 
-**An effect of any other kind inserted today is accepted, stored, and never executed.** No error, no
-retry, no alert — `status` stays `pending` and every screen looks healthy. This is the same silent-
-failure shape that has already cost this repo twice: a hardcoded tenant constant that held four
-approved emails (including a $60,000 quote) for three days, and a month of failed deploys nobody saw
-because production kept serving.
+The drain no longer names a kind. §6.2 is what replaced it.
 
 ---
 
-## 6. Proposed: two registries
+## 6. The registries
 
-**Status: Proposed. Neither exists.** Both mirror the three registries in §4 that already work.
+**§6.2 tool register: Built.** **§6.1 connector manifest: Proposed, no code.** Both mirror the three
+registries in §4 that already work.
 
 ### 6.1 Connector manifest
 
@@ -265,46 +277,82 @@ and its confirmer. Every real trap in `google.ts` and `xero.ts` lives in exactly
 Docs need export not download; Xero's refresh rotates per use), and a config file that claimed to
 abstract them would be lying about the hardest part.
 
-### 6.2 Tool register
+### 6.2 Tool register — **Built**
 
-The `tool_register` in `EXECUTION_LAYER.md` §16.2, made executable. `config/tools/<kind>.json`:
+The `tool_register` from `EXECUTION_LAYER.md` §16.2, made executable. Three parts:
+
+| Part | File | Holds |
+|---|---|---|
+| The facts | `config/tools.json` | one entry per kind — class, connector, requirements, retries, flows unlocked |
+| The binding | `src/tools/executors.ts` | `kind → executor function`, a static map |
+| The loader | `src/tools/register.ts` | validate, `executableKinds()`, `isExecutable()` |
 
 ```jsonc
 {
-  "kind": "invoice.create",          // matches effects.kind exactly
+  "kind": "email.send",              // matches effects.kind EXACTLY
   "class": "effect",                 // "read" | "effect" — the safety split, declared
-  "connector": "xero",
-  "requiresConnection": true,
-  "executorModule": "src/connectors/xero-write.ts#createInvoice",
-  "gate": { "action": "invoice.issue", "spendFrom": "request.amount" },
+  "label": "Send an email",
+  "connector": "resend",
+  "requiresConnection": false,
+  "requiresSenderIdentity": true,
   "idempotent": true,
   "maxAttempts": 3,
-  "flowsUnlocked": ["33", "107"]
+  "flowsUnlocked": ["9","19","45","46","56","67","127"]
 }
 ```
 
-The drain then becomes: *select pending effects whose kind is registered, group by tenant, dispatch
-to the executor named by the register.* One loop instead of one hardcoded kind.
+The drain is now: *select **all** pending effects, run the kinds the register covers, report the ones
+it does not.* One loop instead of one hardcoded kind.
 
-**Three non-negotiables for this registry**, each of which is a lesson rather than a preference:
+**Two departures from the design as first written in this document, both forced by reality:**
 
-1. **An unregistered kind FAILS, loudly.** The drain must count and log effects whose kind it does
-   not recognise, and a nonzero count must be visible. Silently leaving them pending is the exact
-   defect being fixed — a check that quietly does nothing is indistinguishable from one that passed.
-2. **`class: "effect"` can never place a tool in a handler's tool set.** Read tools are available to
-   any handler; effect tools are emitted and performed elsewhere. A config file able to blur that
-   would undo the property that makes the gates structurally true rather than behaviourally hoped
-   for. Registration must be *executor-side only*.
-3. **`requiresConnection` is checked before the attempt, and a missing connection is a SKIP with a
-   reason, not an error.** A tenant part-way through onboarding is an expected state. The email drain
-   already models this correctly; copy it rather than reinventing it.
+- **One file, not one per tool.** A serverless bundle cannot glob a directory at runtime, so per-kind
+  files would need an index someone must remember to update — the same forgettable step that leaves
+  a connector wired and invisible in the connections UI. One file has no index to forget.
+- **No `executorModule` string.** The original schema named the executor by path and imported it
+  dynamically. That does not survive bundling: a path that exists only as a string is not bundled,
+  so the tool fails in production with module-not-found rather than in CI. A registry whose failure
+  mode is *"works locally, missing in prod"* is worse than the hardcoded call it replaced. The
+  binding is therefore code, and `npm run check:tools` asserts the two halves agree — which converts
+  the one real risk of splitting them into a build failure.
 
-### 6.3 Sequencing, if this is built
+**Three non-negotiables, each a lesson rather than a preference — all three now enforced:**
 
-1. `tool_register` first — it closes a live silent-failure hole, and it is a smaller change.
-2. Move the Drive write path onto it as effect kind `document.write`, which also fixes HLD §8 gap 2.
-3. Connector manifest second, when the third provider arrives. Two providers do not yet prove the
-   abstraction, and generalising from two is how you get a config format that fits neither.
+1. **An unregistered kind is LOUD.** The drain deliberately selects pending effects of *every* kind,
+   because filtering in the query would reproduce the original defect in a new place: the rows it
+   cannot execute are exactly the rows worth knowing about. Unknown kinds are counted per kind,
+   `console.error`'d with the fix, and returned at the top level of the cron response as
+   `unregistered: [{kind, pending}]`.
+2. **`class: "effect"` never places a tool in a handler's tool set.** Registration makes a tool
+   executable *by the drain*, and by nothing that reasons. `isExecutable()` returns false for a read
+   tool even though it is registered, and `check:tools` asserts a read tool is neither executable nor
+   bound — mutation-verified.
+3. **A missing prerequisite is a SKIP with a reason, not an error.** A tenant part-way through
+   onboarding is an expected state; reporting it as a failure trains everyone to ignore the log.
+   `ExecutorResult.skipped` is first-class, and the email executor uses it for both an absent sender
+   identity and an unset API key.
+
+**What `check:tools` asserts** (`scripts/check-tool-register.ts`, in CI):
+
+- the register parses — validation **throws** rather than filtering, because a quietly-skipped
+  malformed entry produces the exact failure the register exists to end;
+- every `class:effect` entry has an executor bound, and every bound executor is registered;
+- no read tool is executable or bound;
+- **every effect kind the source can emit is registered** — a literal-only scan of `.from('effects')`
+  inserts. A computed kind is invisible to it, which is stated rather than hidden: it is a floor, not
+  a proof, and it catches the realistic mistake of adding a second emit site and forgetting the
+  register. This is the assertion that *prevents* a stuck row rather than reporting one.
+
+Mutation-verified: renaming the kind in the config turns 3 checks red; downgrading `effect` to `read`
+turns 3 red including the boundary assertion. Restoring returns green.
+
+### 6.3 Sequencing — where this got to
+
+1. ~~Tool register~~ — **done 2026-08-11.**
+2. **Move the Drive write path onto it** as effect kind `document.write` (HLD §8). Not done: it is a
+   behaviour change to a live endpoint, not a refactor, and belongs in its own change.
+3. **Connector manifest** when the third provider arrives. Two providers do not prove an abstraction,
+   and generalising from two is how you get a config format that fits neither.
 
 ---
 
@@ -332,15 +380,22 @@ to the executor named by the register.* One loop instead of one hardcoded kind.
    token if it does.
 6. Never let a re-auth write `null` over a live `refresh_token`.
 
-### 7.3 Add a tool (today, pre-registry)
+### 7.3 Add a tool
 
-1. Write the executor.
-2. **Edit `app/api/cron/drain/route.ts`** to select and dispatch the new `effects.kind`. Until the
-   register exists, this step is the whole difference between a working tool and rows that pile up
-   silently.
-3. Emit the effect only from a path that has passed the gate — the approve route or the sweeper's
-   notify band. Never from a handler.
-4. Give it an `idempotency_key` that is stable for the trigger, not the attempt.
+1. **Register it** — one entry in `config/tools.json`. `kind` must match `effects.kind` exactly.
+2. **Bind it** — write the executor and add it to `EXECUTORS` in `src/tools/executors.ts`. It takes
+   an `ExecutorContext` and returns `{sent, failed, refused, skipped?, reason?}`. Claiming rows is
+   the executor's own job — never hand it pre-claimed rows, or two executors race over one outbox.
+3. **`npm run check:tools`.** It fails if the two disagree, so you cannot ship half of it.
+4. Emit the effect only from a path that has passed the gate — the approve route or the sweeper's
+   notify band. **Never from a handler.**
+5. Give it an `idempotency_key` stable for the *trigger*, not the attempt.
+
+`app/api/cron/drain/route.ts` is **not** edited. That is the point of the register: the step that
+used to be forgettable, and silent when forgotten, no longer exists.
+
+A **read** tool is registered the same way with `class: "read"` and no executor. It stays unreachable
+from the outbox by construction.
 
 ---
 
@@ -375,6 +430,7 @@ reading, which is weaker — the gate and jurisdiction invariants are the obviou
 | `npm run typecheck` | compiles |
 | `npm test` | 18 jurisdiction tests |
 | `npm run check:auth` | 12 caller/tenant boundary assertions |
+| `npm run check:tools` | the register and its executors agree; no read tool is executable; every emitted kind is registered |
 | `npm run build` | the production build Vercel runs |
 | `npm run sweep -- --tenant <uuid> --dry-run` | what *would* be decided, writing nothing |
 | `npm run drain -- --dry-run` | what *would* be sent |

@@ -74,6 +74,13 @@ jobs:
       - name: Caller-auth boundary checks
         run: npm run check:auth
 
+      # The tool register's two halves — config/tools.json and src/tools/executors.ts — must agree,
+      # and every effect kind the code can emit must be registered. The drain reports an unregistered
+      # kind at runtime, which is loud but late: the effect is already in the outbox and already
+      # stuck. This asserts it before deploy, so the stuck row never happens.
+      - name: Tool register checks
+        run: npm run check:tools
+
       - name: Build
         run: npm run build
 

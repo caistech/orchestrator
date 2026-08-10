@@ -21,6 +21,7 @@ exercised) · **Proposed** (designed here, no code).
 | `src/drafter.ts` | 177 | The one agent: classify, then draft. | Never sends. Refuses to invent a recipient. |
 | `src/tools/register.ts` | 120 | **The tool register** — loads and validates `config/tools.json`. | Validation throws; a quietly-skipped bad entry is the failure being prevented. |
 | `src/tools/executors.ts` | 105 | `kind → executor`, a **static** map. | Static because a dynamic import by string path is not bundled and fails in prod, not CI. |
+| `src/knowledge/quote-format.ts` | 300 | **Flow 16** — learn / store / read how this business writes a quote. | Five distinct failure reasons, not one shrug: each maps to a different fix. Versioned on save, never updated. |
 | `src/confirm.ts` | 65 | Source-of-record confirmation. | Unreachable ≠ contradicted: one goes to review, the other is dropped. |
 | `src/callback.ts` | 53 | The return leg to the caller. | Fail-soft: the mail has already left, so a down caller must not make a good send look failed. |
 | `src/connect-token.ts` | 65 | HMAC ticket so a caller can start a consent flow. | The tenant is a **claim**, not a query parameter. |
@@ -436,6 +437,8 @@ reading, which is weaker — the gate and jurisdiction invariants are the obviou
 | `npm run drain -- --dry-run` | what *would* be sent |
 | `npm run drain -- --redirect you@real.com` | a real send, to yourself |
 | `npm run xero:sync` | pulls invoices into `entities` |
+| `npm run learn:quotes -- --tenant <uuid> --dry-run` | what format WOULD be extracted from their Drive |
+| `npm run learn:quotes -- --tenant <uuid> --show` | the stored format, as the drafter sees it |
 
 CI runs the first four on every PR, every push to main, and daily, then asserts production is serving
 the expected commit. See `.github/workflows/gate.yml`.

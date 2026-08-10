@@ -48,7 +48,7 @@ Reply with ONLY a JSON object: {"kind":..., "recipient_name":..., "recipient_ema
  * filled in by anything downstream — it reaches the client as typed. Kira mailed "Thanks, [Owner's
  * Name]" to a real address exactly once before this was understood.
  */
-function draftSystem(kind: OwnedKind, ownerName: string | null): string {
+function draftSystem(kind: OwnedKind, ownerName: string | null, formatInstructions?: string | null): string {
   const signoff = ownerName
     ? `The owner you are drafting as is ${ownerName} — sign off as them. `
     : "You do not know the owner's name: end after the final sentence with no sign-off name. ";
@@ -68,8 +68,30 @@ function draftSystem(kind: OwnedKind, ownerName: string | null): string {
     'their own "- " lines so they render as a list. ' +
     'Reply with ONLY a JSON object: {"summary": one line the owner hears, "preview": the full draft}.';
 
-  if (kind === 'quote')
-    return `${common} Draft a short client-ready quote message: a one-line opener, the scope and price as "- " lines, then what happens next. State amounts tax-exclusive with "plus GST". If amounts or scope are missing, draft the covering message and leave clearly-marked [line item] / [$amount] placeholders for the owner to fill.`;
+  if (kind === 'quote') {
+    // FLOW 16. With a learned format this is the A-tier quote: the business's own structure, from
+    // their own past quotes. Without one it falls back to the business-agnostic quote below — worse
+    // output, but honest output, and visibly a generic quote rather than a wrong impression of
+    // theirs. Degrade, don't fake.
+    //
+    // The learned instructions go AFTER `common` and BEFORE the generic shape, so the business's own
+    // structure overrides our default ordering while the non-negotiables in `common` (no sender
+    // placeholder, no Subject: line, list formatting) still bind. Those exist because each one
+    // reached a real client once.
+    const generic =
+      `${common} Draft a short client-ready quote message: a one-line opener, the scope and price ` +
+      `as "- " lines, then what happens next. State amounts tax-exclusive with "plus GST". If ` +
+      `amounts or scope are missing, draft the covering message and leave clearly-marked ` +
+      `[line item] / [$amount] placeholders for the owner to fill.`;
+
+    if (!formatInstructions) return generic;
+
+    return (
+      `${common} ${formatInstructions}\n\n` +
+      `If amounts or scope are missing, draft the covering message and leave clearly-marked ` +
+      `[line item] / [$amount] placeholders for the owner to fill — never invent a price.`
+    );
+  }
   if (kind === 'email')
     return `${common} Draft the email body only. Keep it a few sentences.`;
   return `${common} Draft a one-line reminder the owner will get back later, plus when it should fire.`;
@@ -162,6 +184,12 @@ export async function draftForIntent(
   cls: Classified,
   ownerName: string | null,
   context?: Record<string, unknown>,
+  /**
+   * Flow 16: the business's own quote format, already rendered as instructions by
+   * `formatAsInstructions`. Optional and absent is a REAL state, not an oversight — a tenant with no
+   * Google connection, or whose quotes are PDFs, has none, and the generic quote is what they get.
+   */
+  formatInstructions?: string | null,
 ): Promise<Drafted | null> {
   const input =
     `Owner said: "${utterance}"\n` +
@@ -171,7 +199,7 @@ export async function draftForIntent(
     (cls.due_hint ? `When: ${cls.due_hint}\n` : '') +
     (context ? `Context you already hold: ${JSON.stringify(context).slice(0, 1500)}\n` : '');
 
-  const raw = await askModel(apiKey, draftSystem(kind, ownerName), input);
+  const raw = await askModel(apiKey, draftSystem(kind, ownerName, formatInstructions), input);
   if (!raw?.summary || !raw?.preview) return null;
   return { summary: String(raw.summary), preview: String(raw.preview) };
 }

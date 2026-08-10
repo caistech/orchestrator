@@ -21,6 +21,7 @@ import { CONTRACT_VERSION, type DispatchRequest } from '@/src/contract';
 import { authoriseCaller } from '@/src/caller-auth';
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
+import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
 
 /**
  * Look a spoken name up in the tenant's own contact books.
@@ -118,6 +119,8 @@ export async function POST(request: Request) {
   let drafted: Awaited<ReturnType<typeof draftForIntent>> = null;
   let kind: OwnedKind | 'unsupported' = 'unsupported';
   let contactLookup: RecipientResolution | null = null;
+  /** Which learned quote format shaped this draft — null when the tenant has none. Recorded on the task. */
+  let quoteFormatVersion: number | null = null;
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (body.ingress === 'SAY' && body.utterance && apiKey) {
@@ -144,7 +147,35 @@ export async function POST(request: Request) {
       // this system holds a tenant. Absent, the drafter is told to sign off with no name rather than
       // invent one.
       const ownerName = (body.context?.ownerName as string) ?? null;
-      drafted = await draftForIntent(apiKey, kind as OwnedKind, body.utterance, classified, ownerName, body.context);
+
+      // FLOW 16 — build the quote in THIS business's format.
+      //
+      // A cheap indexed read of a standing fact, not an agent dispatched to go and look: the format
+      // was extracted from their own past quotes once and versioned (`src/knowledge/quote-format.ts`).
+      // Re-deriving it per quote would cost a Drive round trip plus an extraction call every time,
+      // and would let the same business get a different format on Tuesday than it got on Monday.
+      //
+      // Only for `quote`. An email or a reminder has no format to honour, and loading one would be a
+      // query per dispatch for nothing.
+      let formatInstructions: string | null = null;
+      if (kind === 'quote') {
+        const stored = await currentQuoteFormat(supabase, tenantId);
+        // Absent is a real state — no Google connection, or their quotes are PDFs. The drafter falls
+        // back to its business-agnostic quote: worse output, honest output. Recorded on the task so
+        // "why does this look generic?" has an answer that is not a guess.
+        if (stored) formatInstructions = formatAsInstructions(stored);
+        quoteFormatVersion = stored?.version ?? null;
+      }
+
+      drafted = await draftForIntent(
+        apiKey,
+        kind as OwnedKind,
+        body.utterance,
+        classified,
+        ownerName,
+        body.context,
+        formatInstructions,
+      );
     }
   }
 
@@ -183,7 +214,15 @@ export async function POST(request: Request) {
             : 'queued',
       utterance: body.utterance ?? null,
       summary: drafted?.summary ?? classified?.reason_if_unsupported ?? body.utterance?.slice(0, 200) ?? null,
-      payload: { ...(body.payload ?? {}), kind, classified: classified ?? undefined },
+      payload: {
+        ...(body.payload ?? {}),
+        kind,
+        classified: classified ?? undefined,
+        // Recorded for QUOTES ONLY, and recorded even when null. "This quote used their format v3"
+        // and "this quote is generic because they have no format yet" are both answers a reviewer
+        // needs, and reconstructing which one applied after the fact is impossible.
+        ...(kind === 'quote' ? { quoteFormatVersion } : {}),
+      },
       // Give the operator surfaces something to show besides a bare status. "The drafter did not
       // return anything" is a sentence someone can act on; a `failed` with no reason is not.
       ...(draftFailed

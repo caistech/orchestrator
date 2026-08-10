@@ -122,6 +122,7 @@ in the code. The inventory is thin:
 | **Confirm at source** | read | — | `XeroSourceConfirmer` + a fallback | **Live** |
 | **Read Drive documents** | read | — | `src/connectors/google.ts` | **Built** |
 | **Look up a contact** | read | — | `src/connectors/google-contacts.ts` | **Built** |
+| **Read the business's quote format** | read | `quote_format.read` | `src/knowledge/quote-format.ts` | **Built** — flow 16. A cheap indexed read of a standing fact, not an agent that re-reads Drive per quote |
 | **Write a Drive doc** | effect | — | `record` endpoint | **Built** — *not routed through the outbox*, see §8 |
 | `invoice.create`, `calendar.book`, document generation, payments | effect | — | — | **Absent** (the `effects.kind` column is open text and already documents these as examples) |
 
@@ -138,6 +139,15 @@ There is **one**, and being precise about that is the point of this row:
 | Agent | Job | Model | Prompts | Status |
 |---|---|---|---|---|
 | **The drafter** | classify a spoken request into `quote` / `email` / `reminder` / `unsupported`, then draft the content a human approves | `gpt-4.1-mini` (OpenAI, hardcoded) | inline in `src/drafter.ts` | **Live** |
+| **The format extractor** | read a tenant's own past quotes from Drive and describe the format they share | `gpt-4.1-mini` | `src/knowledge/quote-format.ts` | **Built** — runs on demand (`npm run learn:quotes`), never per quote |
+
+**Flow 16 — "build the quote or proposal" (tier A) — is partly built.** The knowledge half is done:
+the format is extracted once from the owner's own quotes, versioned with provenance, and read cheaply
+by the drafter, which now writes in *their* structure. What is NOT built is the rest of the A-tier
+handler — flows 13/14/15 (past pricing, material costs, capacity) are not yet wired in as read tools,
+so the quote has their shape but not yet their numbers. With no stored format the drafter falls back
+to a business-agnostic quote: worse output, honest output, and recorded on the task as
+`quoteFormatVersion: null` so "why does this look generic?" has an answer.
 
 Everything else in the system is deterministic. The sweeper, the gate, the connectors and the router
 contain **no model in the path** — deliberately, because the twenty threshold flows must be

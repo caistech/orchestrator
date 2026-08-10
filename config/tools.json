@@ -33,6 +33,18 @@
       "maxAttempts": 3,
       "flowsUnlocked": ["9", "19", "45", "46", "56", "67", "127"],
       "notes": "Sends as the TENANT's legal identity, never ours. Commercial mail is refused without an unsubscribe URL, and non-AU recipients hard-block."
+    },
+    {
+      "kind": "quote_format.read",
+      "class": "read",
+      "label": "Read the business's own quote format",
+      "connector": "internal",
+      "requiresConnection": false,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["16", "20", "33"],
+      "notes": "Flow 16. A cheap indexed read of a STANDING FACT (quote_formats), not an agent dispatched to re-read Drive per quote. class:read, so it is available to a handler and unreachable from the outbox — registering it grants no ability to act. Learned by `npm run learn:quotes`."
     }
   ]
 }

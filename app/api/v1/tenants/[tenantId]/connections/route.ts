@@ -19,9 +19,10 @@
 import { NextResponse } from 'next/server';
 
 import { serviceClient } from '@/lib/supabase';
-import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER } from '@/src/contract';
+import { CONTRACT_VERSION } from '@/src/contract';
 import { grantedDriveAccess } from '@/src/connectors/google';
 import { grantedContactsAccess } from '@/src/connectors/google-contacts';
+import { authoriseCaller } from '@/src/caller-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -29,13 +30,14 @@ export const dynamic = 'force-dynamic';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function GET(request: Request, context: { params: Promise<{ tenantId: string }> }) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
+  // The tenant is in the PATH here, so it is resolved before the auth check and the caller is
+  // authorised against it — a scoped caller must not be able to read or rewrite another business's
+  // connections or sender identity just by changing the URL.
   const { tenantId } = await context.params;
+  const auth = authoriseCaller(request, tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
   if (!UUID.test(tenantId)) return NextResponse.json({ error: 'tenantId must be a UUID' }, { status: 400 });
 
   const { data, error } = await serviceClient()

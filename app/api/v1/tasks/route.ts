@@ -18,7 +18,8 @@
 
 import { NextResponse } from 'next/server';
 import { serviceClient } from '@/lib/supabase';
-import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER, type TaskListItem, type TaskState } from '@/src/contract';
+import { CONTRACT_VERSION, type TaskListItem, type TaskState } from '@/src/contract';
+import { authoriseCaller } from '@/src/caller-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,16 +50,14 @@ function kindOf(payload: unknown): string | null {
 }
 
 export async function GET(request: Request) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
   const url = new URL(request.url);
   const tenantId = (url.searchParams.get('tenantId') ?? '').trim();
-  if (!tenantId) {
-    return NextResponse.json({ error: 'tenantId is required' }, { status: 400 });
+
+  // authoriseCaller enforces both halves: tenantId present (400 if not — the rule this route's own
+  // header comment states) and this caller permitted to act for it (403 if not).
+  const auth = authoriseCaller(request, tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   // An unrecognised status is rejected rather than ignored: silently dropping the filter would widen

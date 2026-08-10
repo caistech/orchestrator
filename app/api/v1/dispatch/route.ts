@@ -16,8 +16,9 @@
 // throws nothing, logs nothing, and simply means the feature never runs.
 
 import { NextResponse } from 'next/server';
-import { serviceClient, SEED_TENANT } from '@/lib/supabase';
-import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER, type DispatchRequest } from '@/src/contract';
+import { serviceClient } from '@/lib/supabase';
+import { CONTRACT_VERSION, type DispatchRequest } from '@/src/contract';
+import { authoriseCaller } from '@/src/caller-auth';
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
 
@@ -50,20 +51,19 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) {
-    console.error('[dispatch] ORCHESTRATOR_SECRET unset — refusing rather than running unauthenticated.');
-    return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  }
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
   let body: DispatchRequest;
   try {
     body = (await request.json()) as DispatchRequest;
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+  }
+
+  // Authorise the CALLER and the tenant it claims, together. Reading the body first is required to
+  // do that — the tenant is in it — and costs nothing, since an unauthorised caller is refused
+  // before a single row is touched.
+  const auth = authoriseCaller(request, body.tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   if (!body.intentId) return NextResponse.json({ error: 'intentId is required' }, { status: 400 });
@@ -79,7 +79,11 @@ export async function POST(request: Request) {
   }
 
   const supabase = serviceClient();
-  const tenantId = body.tenantId || SEED_TENANT;
+  // No SEED_TENANT fallback. It used to default here, so a dispatch that arrived without a tenant
+  // succeeded and landed a real business's task in a dev fixture — findable only by someone who
+  // thought to look in the seed tenant. authoriseCaller has already rejected a blank tenantId with
+  // a 400, which is what the contract says the list leg does and what this leg should always have.
+  const tenantId = body.tenantId.trim();
 
   // FIRST CONTACT PROVISIONS THE TENANT.
   //

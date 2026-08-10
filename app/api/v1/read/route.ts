@@ -13,21 +13,15 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 
-import { ORCHESTRATOR_AUTH_HEADER } from '@/src/contract';
 import { readXero, XERO_RESOURCES, XeroNotConnected, XeroUnsupportedResource } from '@/src/connectors/xero-read';
+import { authoriseCaller } from '@/src/caller-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) {
-    console.error('[read] ORCHESTRATOR_SECRET unset — refusing rather than running unauthenticated.');
-    return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  }
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
+  // Auth runs after the body parse below, because the tenant it claims is IN the body and the
+  // caller must be authorised for that tenant, not merely known to us. See the authoriseCaller call.
 
   let body: { tenantId?: string; provider?: string; resource?: string };
   try {
@@ -39,7 +33,19 @@ export async function POST(request: Request) {
   const tenantId = body.tenantId;
   const provider = (body.provider ?? 'xero').toLowerCase();
   const resource = body.resource ?? '';
-  if (!tenantId) return NextResponse.json({ error: 'tenantId is required' }, { status: 400 });
+
+  // This leg reads a tenant's accounting data, so the caller must be authorised for THAT tenant —
+  // not merely hold a secret that vouches for any of them.
+  const auth = authoriseCaller(request, tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+  if (!tenantId) {
+    // Unreachable — authoriseCaller already 400s a blank tenant. Kept as a real check rather than a
+    // cast, because a cast asserts and verifies nothing.
+    return NextResponse.json({ error: 'tenantId is required' }, { status: 400 });
+  }
+
   if (provider !== 'xero') {
     return NextResponse.json({ error: `No reader for provider "${provider}"`, available: ['xero'] }, { status: 400 });
   }

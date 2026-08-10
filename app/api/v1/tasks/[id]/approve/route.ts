@@ -9,26 +9,34 @@
 
 import { NextResponse } from 'next/server';
 import { serviceClient } from '@/lib/supabase';
-import { CONTRACT_VERSION, ORCHESTRATOR_AUTH_HEADER, type ApproveRequest } from '@/src/contract';
+import { CONTRACT_VERSION, type ApproveRequest } from '@/src/contract';
+import { authoriseCaller } from '@/src/caller-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: Request, ctx: { params: Promise<{ id: string }> }) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
   const { id } = await ctx.params;
   let body: ApproveRequest;
   try { body = (await request.json()) as ApproveRequest; }
   catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
 
+  // This route was selecting the task by id with no tenant filter, so any caller holding the shared
+  // secret could approve another business's drafted task. Approval is the step that EXECUTES —
+  // it puts the mail on the wire under that tenant's name and ABN — which makes an unscoped approve
+  // materially worse than an unscoped read.
+  const auth = authoriseCaller(request, body.tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
   const supabase = serviceClient();
   const { data: task } = await supabase
-    .from('tasks').select('id, status, tenant_id, summary').eq('id', id).maybeSingle();
+    .from('tasks').select('id, status, tenant_id, summary')
+    .eq('id', id)
+    .eq('tenant_id', body.tenantId.trim())
+    .maybeSingle();
+  // 404, not 403 — see the note in the sibling GET route.
   if (!task) return NextResponse.json({ error: 'Task not found' }, { status: 404 });
 
   // Idempotent: a task already decided keeps its decision. Re-approving must not re-send.

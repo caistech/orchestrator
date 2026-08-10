@@ -25,10 +25,10 @@ import { NextResponse } from 'next/server';
 import { serviceClient } from '@/lib/supabase';
 import {
   CONTRACT_VERSION,
-  ORCHESTRATOR_AUTH_HEADER,
   type TenantIdentityRequest,
   type TenantIdentityResponse,
 } from '@/src/contract';
+import { authoriseCaller } from '@/src/caller-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,13 +46,11 @@ function reply(body: TenantIdentityResponse, status: number) {
 }
 
 export async function PUT(request: Request, context: { params: Promise<{ tenantId: string }> }) {
-  const secret = process.env.ORCHESTRATOR_SECRET;
-  if (!secret) {
-    console.error('[tenant-identity] ORCHESTRATOR_SECRET unset — refusing rather than running unauthenticated.');
-    return NextResponse.json({ error: 'Orchestrator not configured' }, { status: 503 });
-  }
-  if (request.headers.get(ORCHESTRATOR_AUTH_HEADER) !== secret) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // Tenant comes from the path; authorise the caller for it before touching sender identity —
+  // this call decides whose ABN appears in the Spam Act footer on that tenant's outbound mail.
+  const auth = authoriseCaller(request, (await context.params).tenantId);
+  if (!auth.ok) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   const { tenantId } = await context.params;

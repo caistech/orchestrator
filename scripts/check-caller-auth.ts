@@ -10,7 +10,7 @@
 // stated which tenant it was acting for. That is coherent with a single trusted caller and becomes a
 // cross-tenant hole the moment there are two — which is exactly what wiring F2K-Checkpoint in does.
 
-import { authoriseCaller, parseCallers } from '../src/caller-auth';
+import { authoriseCaller, parseCallers, type CallerEnv } from '../src/caller-auth';
 
 const HEADER = 'x-orchestrator-secret';
 const TENANT_A = '11111111-1111-1111-1111-111111111111';
@@ -38,17 +38,17 @@ function status(result: ReturnType<typeof authoriseCaller>): number | 'ok' {
   return result.ok ? 'ok' : result.status;
 }
 
-const SCOPED = {
+const SCOPED: CallerEnv = {
   ORCHESTRATOR_CALLERS: JSON.stringify([{ id: 'f2k', secret: 'f2k-secret', tenants: [TENANT_A] }]),
-} as NodeJS.ProcessEnv;
+};
 
-const LEGACY = { ORCHESTRATOR_SECRET: 'legacy-secret' } as NodeJS.ProcessEnv;
+const LEGACY: CallerEnv = { ORCHESTRATOR_SECRET: 'legacy-secret' };
 
 // ── fail-closed on configuration ───────────────────────────────────────────────
-check('no callers configured refuses', status(authoriseCaller(req('anything'), TENANT_A, {} as NodeJS.ProcessEnv)), 503);
+check('no callers configured refuses', status(authoriseCaller(req('anything'), TENANT_A, {})), 503);
 check(
   'malformed registry refuses rather than emptying',
-  status(authoriseCaller(req('x'), TENANT_A, { ORCHESTRATOR_CALLERS: 'not json' } as NodeJS.ProcessEnv)),
+  status(authoriseCaller(req('x'), TENANT_A, { ORCHESTRATOR_CALLERS: 'not json' })),
   503,
 );
 
@@ -80,7 +80,7 @@ check(
 check('legacy secret registers as a wildcard caller', parseCallers(LEGACY).map((c) => [c.id, c.tenants]), [['legacy', '*']]);
 check(
   'both sources register together',
-  parseCallers({ ...SCOPED, ...LEGACY } as NodeJS.ProcessEnv).map((c) => c.id),
+  parseCallers({ ...SCOPED, ...LEGACY }).map((c) => c.id),
   ['f2k', 'legacy'],
 );
 

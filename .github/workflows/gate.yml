@@ -1,0 +1,131 @@
+# CI gate — the checks that would have caught the last two production outages.
+#
+# Shaped after cais-shared-services `templates/.github/workflows/gate.yml` so the two can converge,
+# but deliberately NOT a copy of it: the shared template's route- and auth-smoke steps need a
+# routes.config.json / auth.config.json this repo does not have, and a step that hard-fails on a
+# missing config it was never given teaches people to ignore a red gate. They are listed at the
+# bottom as the next thing to add, rather than added broken.
+#
+# Why this file exists at all:
+#
+#   1. Two type errors reached main and broke `next build` — one on 6 Aug (a test file importing a
+#      vitest that was never installed), one on 10 Aug. Both reproduced locally in ~20 seconds with
+#      `npm run typecheck`, and neither was run before pushing. The rule was "remember to run it";
+#      that rule failed twice.
+#
+#   2. Nothing was watching production. A failed deploy leaves the previous build serving happily,
+#      so a broken build and a healthy-looking site are the same thing from outside. The 6 Aug
+#      break may have gone unnoticed for five days for exactly that reason.
+
+name: gate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  # Daily, so an expired NODE_AUTH_TOKEN or a stale production is caught WITHOUT waiting for
+  # someone to push. The ExecutorAI outage this check comes from was a token that expired between
+  # pushes — nothing was broken by a commit, so nothing triggered a build that would have failed.
+  schedule:
+    - cron: '17 20 * * *'
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # registry-url + scope makes setup-node write a managed .npmrc that expands ${NODE_AUTH_TOKEN}.
+      # The repo's own .npmrc names that same variable, so the two agree.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@caistech'
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          # Secret is CAISTECH_PACKAGES_TOKEN because GitHub Actions reserves the GITHUB_ prefix.
+          # Exported under both names: Actions expects NODE_AUTH_TOKEN, Vercel sets
+          # GITHUB_PACKAGES_TOKEN, and a repo-local .npmrc can only name one of them. Getting this
+          # wrong produces a bare 401 that reads as a bad token rather than a missing variable.
+          NODE_AUTH_TOKEN: ${{ secrets.CAISTECH_PACKAGES_TOKEN }}
+          GITHUB_PACKAGES_TOKEN: ${{ secrets.CAISTECH_PACKAGES_TOKEN }}
+
+      # ── The three checks that were reproducible locally and never run ────────────────────────
+      # No --if-present on typecheck or build: this repo HAS both, and --if-present would turn a
+      # renamed script into a silently-passing step, which is the failure mode being fixed.
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      # The caller/tenant authorisation boundary. A tsx script rather than a vitest suite for now
+      # (it predates the runner) — run explicitly so it cannot rot unnoticed.
+      - name: Caller-auth boundary checks
+        run: npm run check:auth
+
+      - name: Build
+        run: npm run build
+
+      # ── Is production actually running the code we think it is? ──────────────────────────────
+      # Three assertions, because the obvious ones are not enough: the latest production deployment
+      # is READY; its commit SHA matches this ref (a STALE production looks perfectly healthy from
+      # outside and is invisible to every reachability check); and the public URL serves the APP,
+      # not an access wall — Vercel's SSO protection page answers HTTP 200 with a login screen, so
+      # "curl returned 200" passes against a page nobody can use.
+      #
+      # Only meaningful against real production, so it does not run on PRs.
+      #
+      # Repo setup: VERCEL_TOKEN (org secret, already ALL-visible); VERCEL_PROJECT_ID /
+      # VERCEL_TEAM_ID / PUBLIC_ALIAS / APP_MARKER as repo VARIABLES — they are identifiers, not
+      # credentials. .vercel/project.json cannot serve as the fallback here: Vercel's own scaffold
+      # gitignores it, so it is never present in a CI checkout.
+      - name: Deploy status (production matches this ref)
+        if: github.event_name != 'pull_request'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ vars.VERCEL_PROJECT_ID }}
+          VERCEL_TEAM_ID: ${{ vars.VERCEL_TEAM_ID }}
+          PUBLIC_ALIAS: ${{ vars.PUBLIC_ALIAS }}
+          APP_MARKER: ${{ vars.APP_MARKER }}
+        run: |
+          # Resolve the binary from node_modules directly. `npx --no-install` does not reliably
+          # refuse the network: where the local bin was absent it queried the PUBLIC registry for an
+          # unscoped name, got a 404, and failed the gate — turning a step meant to skip into a hard
+          # failure. And the skip is a WARNING, never silence: a step that quietly passes when it did
+          # not run is the exact failure this gate exists to correct.
+          BIN=node_modules/.bin/portfolio-gate-deploy-status
+          if [ ! -x "$BIN" ]; then
+            echo "::warning title=Deploy status NOT verified::@caistech/portfolio-gate is missing or predates the deploy-status gate (needs >=0.8.0). Production could be serving stale code and nothing here would notice."
+            exit 0
+          fi
+          # --wait on push: poll until the deployment for THIS commit settles, so the check judges
+          # the build this run produced rather than the previous one.
+          "$BIN" ${{ github.event_name == 'push' && '--wait' || '' }}
+
+# ── Deliberately not here yet ──────────────────────────────────────────────────────────────────
+#
+#   portfolio-gate-smoke-routes / -smoke-auth   need routes.config.json + auth.config.json.
+#   portfolio-gate-audit-machine-routes         would be worth real money here: /api/* is excluded
+#                                               from the middleware matcher (middleware.ts:88), and
+#                                               that exclusion is the only thing standing between
+#                                               every machine caller and a 307 to /login. It is a
+#                                               regex in a file nobody edits when adding a route.
+#                                               Needs each machine route marked @machine-callable.
+#   portfolio-gate-audit-public-routes          only /unsubscribe is public here — but it is printed
+#                                               in customer email and is a Spam Act obligation, so
+#                                               it is exactly the page that must never silently fall
+#                                               behind the gate.
+#
+# Each is one step plus a small amount of per-route marking. Named rather than silently omitted,
+# because an unwritten intention is indistinguishable from an oversight.

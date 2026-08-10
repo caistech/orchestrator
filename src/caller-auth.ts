@@ -43,13 +43,30 @@ interface RegisteredCaller extends Caller {
 }
 
 /**
+ * The two variables this module reads — not the whole environment.
+ *
+ * `process.env` is assignable to this, so every caller passing nothing is unaffected. Naming the
+ * two it actually touches lets a test hand over exactly those two without asserting its way past
+ * the type: `NodeJS.ProcessEnv` requires NODE_ENV under Next's augmentation, so a partial literal
+ * needed an `as` cast, and a cast is precisely the thing that would have hidden a real mismatch.
+ */
+export interface CallerEnv {
+  ORCHESTRATOR_CALLERS?: string;
+  ORCHESTRATOR_SECRET?: string;
+  // Present so `process.env` — which carries an index signature — stays assignable. Without it the
+  // two optional fields make this a "weak type", and TypeScript rejects the real environment for
+  // having nothing provably in common with it.
+  [key: string]: string | undefined;
+}
+
+/**
  * ORCHESTRATOR_CALLERS is a JSON array: [{ "id": "f2k", "secret": "…", "tenants": ["uuid", …] }].
  *
  * A malformed value THROWS rather than yielding an empty registry. An empty registry would refuse
  * every request, which looks like an outage and reads as safe — but the operator's next move is to
  * set the legacy secret and carry on, quietly reinstating the wildcard this exists to remove.
  */
-export function parseCallers(env: NodeJS.ProcessEnv = process.env): RegisteredCaller[] {
+export function parseCallers(env: CallerEnv = process.env): RegisteredCaller[] {
   const callers: RegisteredCaller[] = [];
 
   const raw = env.ORCHESTRATOR_CALLERS?.trim();
@@ -106,7 +123,7 @@ export function parseCallers(env: NodeJS.ProcessEnv = process.env): RegisteredCa
 export function authoriseCaller(
   request: Request,
   tenantId: string | null | undefined,
-  env: NodeJS.ProcessEnv = process.env,
+  env: CallerEnv = process.env,
 ): AuthResult {
   let callers: RegisteredCaller[];
   try {

@@ -74,6 +74,17 @@ function validate(raw: unknown): ToolEntry[] {
     if (t.class !== 'read' && t.class !== 'effect') {
       throw new Error(`config/tools.json: "${t.kind}" needs class "read" or "effect".`);
     }
+    // EVERY KIND IS `noun.verb`, and this is enforced rather than merely conventional because a
+    // check depends on it. `check:tools` scans source for the kinds an emit site can produce, and
+    // an emit site is often an expression — `kind: delivery === 'draft' ? 'email.draft' : 'email.send'`
+    // contains the literal 'draft', which is a comparison value and not a kind. The dot is what
+    // separates the two without a parser. Losing this rule would make that scan produce false
+    // failures, and a check that cries wolf is switched off within a week.
+    if (!t.kind.includes('.')) {
+      throw new Error(
+        `config/tools.json: "${t.kind}" must be noun.verb (e.g. email.send) — check:tools relies on the dot to tell a kind from any other string literal.`,
+      );
+    }
     if (!t.connector) {
       throw new Error(`config/tools.json: "${t.kind}" needs a connector.`);
     }

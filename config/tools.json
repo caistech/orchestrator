@@ -35,6 +35,18 @@
       "notes": "Sends as the TENANT's legal identity, never ours. Commercial mail is refused without an unsubscribe URL, and non-AU recipients hard-block."
     },
     {
+      "kind": "email.draft",
+      "class": "effect",
+      "label": "Put an email in the owner's Gmail drafts",
+      "connector": "google",
+      "requiresConnection": true,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 3,
+      "flowsUnlocked": [],
+      "notes": "Writes to the OWNER'S OWN mailbox for him to review and send himself, so it arrives from his real address and threads with the client's earlier mail. No sender identity is needed because we are not the sender. Separate kind from email.send deliberately: a draft harms nobody, so it carries no approval gate, while a send keeps one. The gmail.compose scope also permits sending and there is no draft-only scope, so the control is src/connectors/gmail-draft.ts, not the grant."
+    },
+    {
       "kind": "quote_format.read",
       "class": "read",
       "label": "Read the business's own quote format",

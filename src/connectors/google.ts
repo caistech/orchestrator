@@ -63,8 +63,27 @@ const DRIVE_SCOPE: Record<DriveAccess, string> = {
  * was granted: `grantedContactsAccess` reads back what actually came, and a lookup without the scope
  * degrades to asking him for the address, exactly as it does today.
  */
+/**
+ * GMAIL DRAFTS — requested, and wider than the job, which is a fact rather than a preference.
+ *
+ * `gmail.compose` is the narrowest scope Google publishes that can create a draft, and it also
+ * permits SENDING messages and drafts. There is no draft-only scope. So the token this grants CAN
+ * send, and the only thing that stops it is `gmail-draft.ts`, which is written to make that
+ * structurally hard: one endpoint, the verb as a literal, no parameter that could carry a send path.
+ *
+ * ⚠️ It is RESTRICTED rather than sensitive, unlike contacts. On an app already requesting
+ * `auth/drive` or `drive.readonly` that changes no tier; on `drive.file` it does, and it raises the
+ * Google verification bar accordingly. Worth knowing before this reaches many owners.
+ *
+ * ⚠️ EXISTING OWNERS DO NOT GET IT BY UPGRADE. A scope added here is only carried by tokens issued
+ * AFTER it; every connection made before must be re-consented. Nothing assumes otherwise —
+ * `hasGmailScope` reads back what actually arrived, and the drain skips with a specific reason
+ * ("the Google connection predates Gmail access") rather than failing in a way that reads as a bug.
+ */
+const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+
 export function scopesFor(access: DriveAccess): string {
-  return [...BASE_SCOPES, DRIVE_SCOPE[access], ...CONTACTS_SCOPES].join(' ');
+  return [...BASE_SCOPES, DRIVE_SCOPE[access], ...CONTACTS_SCOPES, GMAIL_SCOPE].join(' ');
 }
 
 export function isDriveAccess(value: unknown): value is DriveAccess {

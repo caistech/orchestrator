@@ -69,15 +69,31 @@ for (const tool of allTools().filter((t) => t.class === 'read')) {
 
 // ── every effect kind the code can EMIT is registered ─────────────────────────
 //
-// This is the assertion that prevents the stuck row rather than reporting it. It reads the source for
-// inserts into `effects` and pulls the literal kind out.
+// This is the assertion that prevents the stuck row rather than reporting it. The runtime drain
+// reports an unregistered kind, but by then the effect is already written and already stuck.
 //
-// Deliberately a literal-only scan. A computed kind (`kind: someVariable`) is invisible to it, and
-// that is stated rather than hidden: the check is a floor, not a proof. It catches the realistic
-// case — someone adds a second `kind: 'invoice.create'` insert and forgets the register — which is
-// exactly the mistake this whole register exists to make impossible.
+// ⚠️ WIDENED 2026-08-12, BECAUSE THE FIRST VERSION HAD A HOLE AND THE VERY NEXT CHANGE FELL IN IT.
+//
+// It matched `kind:` followed IMMEDIATELY by a quoted literal. The approve route then began emitting
+//     kind: delivery === 'draft' ? 'email.draft' : 'email.send'
+// and `email.draft` became invisible to the scan — silently, while the check still reported green.
+// The original was documented as "a floor, not a proof", which turned out to be worth very little:
+// the hole was real within hours.
+//
+// It now reads the whole `kind:` EXPRESSION and takes every string literal in it. That introduces the
+// opposite risk — 'draft' in the comparison above is a literal and is NOT a kind — so it keeps only
+// literals containing a DOT, which `register.ts` enforces on every registered kind for exactly this
+// reason. Precise without a parser.
+//
+// A kind that is genuinely computed (`kind: someVariable`) still cannot be verified statically. That
+// now FAILS rather than passing quietly, and opts out by name with a reason on the same line:
+//     kind: computed, // @effect-kind-dynamic: resolved from the register at runtime
 const ROOTS = ['src', 'app', 'scripts'];
-const EMIT = /\.from\(\s*['"]effects['"]\s*\)[\s\S]{0,400}?kind:\s*['"]([a-z0-9_.]+)['"]/g;
+/** The `effects` insert, then the whole `kind:` line — the expression, not just a literal. */
+const EMIT = /\.from\(\s*['"]effects['"]\s*\)[\s\S]{0,400}?kind:\s*([^\n]+)/g;
+/** A kind is noun.verb. The dot is what separates it from any other string on the line. */
+const KIND_LITERAL = /['"]([a-z0-9_]+\.[a-z0-9_.]+)['"]/g;
+const DYNAMIC_OPT_OUT = /@effect-kind-dynamic:\s*\S/;
 
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];
@@ -90,16 +106,38 @@ function sourceFiles(dir: string): string[] {
 }
 
 const emitted = new Map<string, string>();
+/** Emit sites whose kind is an expression with no literal in it — unverifiable, so reported. */
+const unverifiable: Array<{ file: string; expression: string }> = [];
+
 for (const root of ROOTS) {
   for (const file of sourceFiles(root)) {
     const text = readFileSync(file, 'utf8');
     for (const match of text.matchAll(EMIT)) {
-      if (!emitted.has(match[1])) emitted.set(match[1], file);
+      const expression = match[1].trim();
+      const literals = [...expression.matchAll(KIND_LITERAL)].map((m) => m[1]);
+
+      if (literals.length === 0) {
+        // Opting out is allowed, but it has to be written down and it has to say why — the same
+        // "silence is not acceptance" shape as the canonical-feed guard.
+        if (!DYNAMIC_OPT_OUT.test(expression)) unverifiable.push({ file, expression });
+        continue;
+      }
+      for (const kind of literals) if (!emitted.has(kind)) emitted.set(kind, file);
     }
   }
 }
 
 console.log(`      emitted kinds found in source: ${[...emitted.keys()].join(', ') || '(none)'}`);
+
+for (const site of unverifiable) {
+  check(
+    `emit site in ${site.file} names a kind that can be checked`,
+    false,
+    `\`kind: ${site.expression.slice(0, 80)}\` has no string literal, so nothing here can prove the ` +
+      `kind is registered — and an unregistered kind is written to the outbox and never executed. ` +
+      `Use a literal, or opt out on the same line with "// @effect-kind-dynamic: <why>".`,
+  );
+}
 
 for (const [kind, file] of emitted) {
   check(

@@ -65,10 +65,22 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const { data: taskRow } = await supabase.from('tasks').select('payload, intent_id').eq('id', id).maybeSingle();
   const to = (draft?.recipients as string[] | null)?.[0] ?? null;
 
+  // WHERE IT GOES IS THE OWNER'S DECISION, RECORDED AT DRAFT TIME — not re-guessed here.
+  //
+  // "Just put it in drafts in Gmail" was asked three times in one call on 2026-08-11 and answered
+  // "I'll save the draft in your Gmail", which nothing could do. `email.draft` writes it into HIS
+  // mailbox so he sends it himself: from his real address, in his sent items, threading with the
+  // client's earlier mail. `email.send` goes out through Resend from a noreply address we own.
+  //
+  // Defaulting to `send` on a missing value is deliberate and is the safe direction here ONLY because
+  // this branch is already behind an explicit approval — the owner has said yes to something going
+  // out. A payload that lost its delivery preference should behave as it did before this existed.
+  const delivery = (taskRow?.payload as { delivery?: string } | null)?.delivery === 'draft' ? 'draft' : 'send';
+
   await supabase.from('effects').insert({
     task_id: id,
-    kind: 'email.send',
-    connector: 'resend',
+    kind: delivery === 'draft' ? 'email.draft' : 'email.send',
+    connector: delivery === 'draft' ? 'google' : 'resend',
     idempotency_key: `approved:${taskRow?.intent_id ?? id}`,
     request: {
       to, subject: draft?.subject, body: draft?.body,

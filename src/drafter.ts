@@ -24,6 +24,8 @@ export interface Classified {
   subject: string | null;
   due_hint: string | null;
   reason_if_unsupported: string | null;
+  /** 'draft' = put it in the owner's own Gmail drafts; 'send' = out through Resend. */
+  delivery: 'draft' | 'send';
 }
 
 export interface Drafted {
@@ -163,6 +165,33 @@ function usableRecipient(value: unknown): string | null {
   return email;
 }
 
+/**
+ * Did the owner ask for it to be PUT IN HIS DRAFTS, rather than sent?
+ *
+ * NOT asked of the model, deliberately. "Draft an email to Roger" and "put it in my drafts" both
+ * contain the word draft and mean opposite things about destination — one is the verb for composing,
+ * the other names where it must end up. That is exactly the distinction a temperature-0 classifier
+ * gets right most of the time and wrong occasionally, and the cost of wrong is an email leaving the
+ * building when the owner expected to review it in his own client first.
+ *
+ * So it matches on the DESTINATION, never the verb: some form of "in drafts", "gmail draft", "as a
+ * draft", or "drafts folder". Bare "draft it" is not a match and must not become one.
+ *
+ * Taken from the transcript that prompted this — "just put it in drafts in Gmail", "have it sitting
+ * in the Gmail drafts", "save in Gmail drafts" — all of which match, while "Draft follow-up email
+ * for lot 442" does not.
+ */
+export function deliveryFromUtterance(utterance: string): 'draft' | 'send' {
+  const wantsDrafts =
+    /\b(?:in|into|to)\s+(?:my\s+|the\s+|his\s+)?(?:gmail\s+)?drafts?\b/i.test(utterance) ||
+    /\bg\s?mail\s+drafts?\b/i.test(utterance) ||
+    /\bas\s+a\s+draft\b/i.test(utterance) ||
+    /\bdrafts?\b[^.?!]{0,40}\bg\s?mail\b/i.test(utterance) ||
+    /\bg\s?mail\b[^.?!]{0,40}\bdrafts?\b/i.test(utterance) ||
+    /\bdrafts?\s+folder\b/i.test(utterance);
+  return wantsDrafts ? 'draft' : 'send';
+}
+
 export async function classifyIntent(apiKey: string, utterance: string): Promise<Classified | null> {
   const raw = await askModel(apiKey, CLASSIFY_SYSTEM, utterance);
   if (!raw) return null;
@@ -174,6 +203,7 @@ export async function classifyIntent(apiKey: string, utterance: string): Promise
     subject: (raw.subject as string) ?? null,
     due_hint: (raw.due_hint as string) ?? null,
     reason_if_unsupported: (raw.reason_if_unsupported as string) ?? null,
+    delivery: deliveryFromUtterance(utterance),
   };
 }
 

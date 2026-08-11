@@ -13,6 +13,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { drainEmailOutbox } from '../connectors/email';
+import { drainDraftOutbox } from '../connectors/gmail-draft';
 
 /**
  * What every executor is handed. Deliberately narrow: a tenant, a client, and the environment it
@@ -91,9 +92,36 @@ const sendEmail: Executor = async ({ supabase, tenantId, dryRun, redirectTo }) =
   }
 };
 
+/**
+ * Put the prepared email in the owner's OWN Gmail drafts, for him to review and send himself.
+ *
+ * A separate kind from `email.send` on purpose. They differ in destination, in who the recipient sees
+ * it from, and — the part that matters — in what they can do wrong: a draft harms nobody, so it
+ * carries no approval gate, while a send keeps one. Two kinds, two gates, enforced by this drain
+ * rather than by anything that reasons.
+ */
+const draftEmail: Executor = async ({ supabase, tenantId, dryRun }) => {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  if (!clientId || !clientSecret) {
+    return { sent: 0, failed: 0, refused: 0, skipped: true, reason: 'GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET unset' };
+  }
+
+  const report = await drainDraftOutbox({ supabase, tenantId, clientId, clientSecret, dryRun });
+  return {
+    // `sent` on this executor means "written into his drafts", never "left the building".
+    sent: report.drafted,
+    failed: report.failed,
+    refused: 0,
+    skipped: report.skipped,
+    reason: report.reason,
+  };
+};
+
 /** kind → executor. The key MUST match a `class: "effect"` entry in config/tools.json. */
 export const EXECUTORS: Record<string, Executor> = {
   'email.send': sendEmail,
+  'email.draft': draftEmail,
 };
 
 export function executorFor(kind: string): Executor | null {

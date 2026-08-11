@@ -22,6 +22,7 @@ exercised) · **Proposed** (designed here, no code).
 | `src/tools/register.ts` | 120 | **The tool register** — loads and validates `config/tools.json`. | Validation throws; a quietly-skipped bad entry is the failure being prevented. |
 | `src/tools/executors.ts` | 105 | `kind → executor`, a **static** map. | Static because a dynamic import by string path is not bundled and fails in prod, not CI. |
 | `src/knowledge/quote-format.ts` | 300 | **Flow 16** — learn / store / read how this business writes a quote. | Five distinct failure reasons, not one shrug: each maps to a different fix. Versioned on save, never updated. |
+| `src/knowledge/past-pricing.ts` | 145 | **Flow 13** — what did we charge for similar work? | The refusal instruction ships WITH the figures, never in the drafter, so figures cannot reach a prompt without it. Returns [] on every failure — a quote must not fail to draft because history was unavailable. |
 | `src/confirm.ts` | 65 | Source-of-record confirmation. | Unreachable ≠ contradicted: one goes to review, the other is dropped. |
 | `src/callback.ts` | 53 | The return leg to the caller. | Fail-soft: the mail has already left, so a down caller must not make a good send look failed. |
 | `src/connect-token.ts` | 65 | HMAC ticket so a caller can start a consent flow. | The tenant is a **claim**, not a query parameter. |

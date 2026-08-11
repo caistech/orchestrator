@@ -45,6 +45,18 @@
       "maxAttempts": 1,
       "flowsUnlocked": ["16", "20", "33"],
       "notes": "Flow 16. A cheap indexed read of a STANDING FACT (quote_formats), not an agent dispatched to re-read Drive per quote. class:read, so it is available to a handler and unreachable from the outbox — registering it grants no ability to act. Learned by `npm run learn:quotes`."
+    },
+    {
+      "kind": "past_pricing.read",
+      "class": "read",
+      "label": "What this business charged for similar work before",
+      "connector": "internal",
+      "requiresConnection": false,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["13", "16", "20"],
+      "notes": "Flow 13. One indexed read of the entity index — no model, because looking up what you charged is a lookup and a model would make the same history answer differently on Tuesday. Carries a refusal instruction WITH the figures: they are reference for the owner, never a price for the drafter. A specific wrong number on a quote is worse than the [$amount] placeholder it replaces."
     }
   ]
 }

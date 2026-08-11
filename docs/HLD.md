@@ -123,6 +123,7 @@ in the code. The inventory is thin:
 | **Read Drive documents** | read | — | `src/connectors/google.ts` | **Built** |
 | **Look up a contact** | read | — | `src/connectors/google-contacts.ts` | **Built** |
 | **Read the business's quote format** | read | `quote_format.read` | `src/knowledge/quote-format.ts` | **Built** — flow 16. A cheap indexed read of a standing fact, not an agent that re-reads Drive per quote |
+| **What we charged before** | read | `past_pricing.read` | `src/knowledge/past-pricing.ts` | **Built** — flow 13. Gives the quote its numbers where the format gave it its shape |
 | **Write a Drive doc** | effect | — | `record` endpoint | **Built** — *not routed through the outbox*, see §8 |
 | `invoice.create`, `calendar.book`, document generation, payments | effect | — | — | **Absent** (the `effects.kind` column is open text and already documents these as examples) |
 
@@ -143,9 +144,12 @@ There is **one**, and being precise about that is the point of this row:
 
 **Flow 16 — "build the quote or proposal" (tier A) — is partly built.** The knowledge half is done:
 the format is extracted once from the owner's own quotes, versioned with provenance, and read cheaply
-by the drafter, which now writes in *their* structure. What is NOT built is the rest of the A-tier
-handler — flows 13/14/15 (past pricing, material costs, capacity) are not yet wired in as read tools,
-so the quote has their shape but not yet their numbers. With no stored format the drafter falls back
+by the drafter, which now writes in *their* structure. **Flow 13 (past pricing) is now a read tool too**, so a quote is shaped by their format and informed
+by what they have charged. **Flows 14 (material costs) and 15 (capacity) are NOT built, and not for
+want of effort: there is no data behind either.** 14 needs supplier pricing, which no connector
+feeds — `sku` rows carry `on_hand`/`minimum`, never a unit cost. 15 needs a calendar or scheduling
+connector, and none exists. Building them against nothing would be a roadmap pretending to be a
+capability. With no stored format the drafter falls back
 to a business-agnostic quote: worse output, honest output, and recorded on the task as
 `quoteFormatVersion: null` so "why does this look generic?" has an answer.
 

@@ -13,6 +13,7 @@ import { readFileSync } from 'node:fs';
 import { createClient } from '@supabase/supabase-js';
 
 import { findComparableWork, comparablesAsContext } from '../src/knowledge/past-pricing';
+import { findMaterialCost, materialCostAsContext } from '../src/knowledge/material-cost';
 
 const SEED_TENANT = '00000000-0000-4000-a000-000000000001';
 
@@ -118,7 +119,44 @@ async function main() {
   check('the rendered context carries the refusal', !!context && /NOT the price/i.test(context));
   if (context) console.log(`\n--- what the drafter would be shown ---\n${context}\n`);
 
-  console.log(failures === 0 ? 'All past-pricing probes passed.' : `\n${failures} probe(s) FAILED.`);
+  // ── FLOW 14a — material costs, which live inside a jsonb ARRAY rather than a column ───────────
+  // Same failure shape as the .or() filter above, one layer deeper: a jsonb path that is subtly
+  // wrong returns nothing, and nothing is indistinguishable from "this business has never bought
+  // that". The unit tests cannot see it, because they never touch a database.
+  const { data: bills } = await supabase
+    .from('entities')
+    .select('display_name')
+    .eq('tenant_id', tenantId)
+    .eq('kind', 'bill');
+  console.log(`supplier bills present: ${bills?.length ?? 0}`);
+
+  if (!bills?.length) {
+    check('supplier bills are seeded', false, 'no bill entities — flow 14a cannot be proven');
+  } else {
+    const pine = await findMaterialCost(supabase, tenantId, 'quote the deck in treated pine');
+    check('a known material returns what we paid', pine.length > 0, `got ${pine.length} line items`);
+    for (const m of pine) console.log(`      → ${m.description}  ${m.unitAmount ?? '(none)'}  ${m.supplier ?? ''}`);
+
+    // Both seeded suppliers sell treated pine. One supplier back means the scan stopped at the
+    // first bill, which would silently halve every answer.
+    check(
+      'it reaches across bills, not just the first',
+      new Set(pine.map((m) => m.supplier)).size > 1,
+      'every hit came from one supplier — the scan is stopping early',
+    );
+
+    const none = await findMaterialCost(supabase, tenantId, 'quote for unobtanium flanges');
+    check('an unknown material returns nothing', none.length === 0, `got ${none.length}`);
+
+    const costContext = materialCostAsContext(pine);
+    check(
+      'the cost context says COSTS and forbids quoting at cost',
+      !!costContext && /COSTS, not prices/.test(costContext) && /give the job away/i.test(costContext),
+    );
+    if (costContext) console.log(`\n--- what the drafter would be shown for materials ---\n${costContext}\n`);
+  }
+
+  console.log(failures === 0 ? 'All probes passed.' : `\n${failures} probe(s) FAILED.`);
   process.exitCode = failures === 0 ? 0 : 1;
 }
 

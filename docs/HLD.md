@@ -124,6 +124,7 @@ in the code. The inventory is thin:
 | **Look up a contact** | read | — | `src/connectors/google-contacts.ts` | **Built** |
 | **Read the business's quote format** | read | `quote_format.read` | `src/knowledge/quote-format.ts` | **Built** — flow 16. A cheap indexed read of a standing fact, not an agent that re-reads Drive per quote |
 | **What we charged before** | read | `past_pricing.read` | `src/knowledge/past-pricing.ts` | **Built** — flow 13. Gives the quote its numbers where the format gave it its shape |
+| **What materials cost us** | read | `material_cost.read` | `src/knowledge/material-cost.ts` | **Built** — flow 14a. Xero ACCPAY bill line items. NOT current rates — what was billed, on a date |
 | **Write a Drive doc** | effect | — | `record` endpoint | **Built** — *not routed through the outbox*, see §8 |
 | `invoice.create`, `calendar.book`, document generation, payments | effect | — | — | **Absent** (the `effects.kind` column is open text and already documents these as examples) |
 
@@ -145,9 +146,11 @@ There is **one**, and being precise about that is the point of this row:
 **Flow 16 — "build the quote or proposal" (tier A) — is partly built.** The knowledge half is done:
 the format is extracted once from the owner's own quotes, versioned with provenance, and read cheaply
 by the drafter, which now writes in *their* structure. **Flow 13 (past pricing) is now a read tool too**, so a quote is shaped by their format and informed
-by what they have charged. **Flows 14 (material costs) and 15 (capacity) are NOT built, and not for
-want of effort: there is no data behind either.** 14 needs supplier pricing, which no connector
-feeds — `sku` rows carry `on_hand`/`minimum`, never a unit cost. 15 needs a calendar or scheduling
+by what they have charged. **Flow 14 is HALF built.** `syncBills` pulls Xero `ACCPAY` bills with line-item
+detail, so "what did this material cost us" is answerable — that is 14a. The registry asks for
+*current* material costs, and no current-rate source is connected (no supplier price list, no
+trade-account API), so that half is deliberately absent rather than approximated: a bill from March
+is evidence, not a rate. **Flow 15 (capacity) is NOT built** — it needs a calendar or scheduling
 connector, and none exists. Building them against nothing would be a roadmap pretending to be a
 capability. With no stored format the drafter falls back
 to a business-agnostic quote: worse output, honest output, and recorded on the task as

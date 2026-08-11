@@ -23,6 +23,7 @@ import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/s
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
 import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
 import { findComparableWork, comparablesAsContext, type Comparable } from '@/src/knowledge/past-pricing';
+import { findMaterialCost, materialCostAsContext, type MaterialCost } from '@/src/knowledge/material-cost';
 
 /**
  * Look a spoken name up in the tenant's own contact books.
@@ -124,6 +125,8 @@ export async function POST(request: Request) {
   let quoteFormatVersion: number | null = null;
   /** Prior priced work the drafter was shown. Recorded so a reviewer sees the same figures it saw. */
   let comparables: Comparable[] = [];
+  /** Supplier COSTS the drafter was shown — a different question from what we charged, see below. */
+  let materialCosts: MaterialCost[] = [];
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (body.ingress === 'SAY' && body.utterance && apiKey) {
@@ -176,9 +179,16 @@ export async function POST(request: Request) {
           client: classified.recipient_name,
           description: body.utterance,
         });
+
+        // FLOW 14a — what did the MATERIALS cost? A different question from flow 13, and the two
+        // must never be conflated: one is what we charged a client, the other is what we paid a
+        // supplier. Quoting at cost is the expensive way to confuse them, so each block carries its
+        // own refusal rather than sharing one.
+        materialCosts = await findMaterialCost(supabase, tenantId, body.utterance);
       }
 
       const priorWork = comparablesAsContext(comparables);
+      const supplierCosts = materialCostAsContext(materialCosts);
       drafted = await draftForIntent(
         apiKey,
         kind as OwnedKind,
@@ -188,7 +198,13 @@ export async function POST(request: Request) {
         // Comparables travel in `context`, which the drafter already prints verbatim into the
         // prompt. The refusal instruction travels WITH them rather than living in the drafter's
         // system prompt, so a caller can never get the figures without the warning attached.
-        priorWork ? { ...(body.context ?? {}), priorWork } : body.context,
+        priorWork || supplierCosts
+          ? {
+              ...(body.context ?? {}),
+              ...(priorWork ? { priorWork } : {}),
+              ...(supplierCosts ? { supplierCosts } : {}),
+            }
+          : body.context,
         formatInstructions,
       );
     }
@@ -242,6 +258,7 @@ export async function POST(request: Request) {
               // The figures the drafter saw, recorded on the task. If a price ends up in a quote
               // that nobody dictated, this is the list to check it against.
               comparables: comparables.map((c) => ({ label: c.label, amount: c.amount, when: c.when })),
+              materialCosts: materialCosts.map((m) => ({ description: m.description, unitAmount: m.unitAmount, when: m.when })),
             }
           : {}),
       },

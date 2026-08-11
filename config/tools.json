@@ -58,5 +58,18 @@
       "flowsUnlocked": ["13", "16", "20"],
       "notes": "Flow 13. One indexed read of the entity index — no model, because looking up what you charged is a lookup and a model would make the same history answer differently on Tuesday. Carries a refusal instruction WITH the figures: they are reference for the owner, never a price for the drafter. A specific wrong number on a quote is worse than the [$amount] placeholder it replaces."
     }
+    ,
+    {
+      "kind": "material_cost.read",
+      "class": "read",
+      "label": "What this business paid suppliers for materials",
+      "connector": "xero",
+      "requiresConnection": true,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["14", "16", "56"],
+      "notes": "Flow 14a — what we PAID, from Xero ACCPAY bill line items. NOT flow 14 in full: the registry asks for CURRENT material costs and no current-rate source is connected, so this answers what was billed on a date rather than what a thing costs today. Its refusal is deliberately stronger than past_pricing's: these are COSTS, and a model that quotes at cost gives the job away."
+    }
   ]
 }

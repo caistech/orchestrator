@@ -7,7 +7,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { readFileSync } from 'node:fs';
-import { syncInvoices, xeroConnectionFor } from '../src/connectors/xero';
+import { syncBills, syncInvoices, xeroConnectionFor } from '../src/connectors/xero';
 
 const env = { ...(() => { try {
   return Object.fromEntries(readFileSync('.env.local', 'utf8').split(/\r?\n/)
@@ -28,6 +28,21 @@ if (!connection) {
   process.exit(1);
 }
 
+// --bills pulls SUPPLIER bills (ACCPAY) instead of sales invoices (ACCREC) — flow 14a, what the
+// business PAID. Separate flag rather than always-both: the bill sync costs one extra API call per
+// bill for line-item detail, and a debtor-chase sync has no use for any of it.
+if (process.argv.includes('--bills')) {
+  const detailIdx = process.argv.indexOf('--detail');
+  const detailLimit = detailIdx > -1 ? Number(process.argv[detailIdx + 1]) : undefined;
+  const bills = await syncBills(supabase, connection, env.XERO_CLIENT_ID, env.XERO_CLIENT_SECRET, { detailLimit });
+  console.log(
+    `
+Synced ${bills.upserted} bill(s) for tenant ${tenantId.slice(0, 8)}… — ` +
+      `${bills.withDetail} with line-item detail, ${bills.skippedDetail} stored with totals only.
+`,
+  );
+  process.exitCode = 0;
+} else {
 const result = await syncInvoices(supabase, connection, env.XERO_CLIENT_ID, env.XERO_CLIENT_SECRET);
 console.log(`\nSynced ${result.upserted} invoice(s) into the entity index for tenant ${tenantId.slice(0, 8)}…\n`);
 
@@ -49,3 +64,4 @@ for (const e of data ?? []) {
   );
 }
 console.log('\n  (negative days = not yet due)\n');
+}

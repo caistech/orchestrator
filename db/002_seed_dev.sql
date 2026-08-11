@@ -142,6 +142,42 @@ VALUES ('00000000-0000-4000-a000-000000000001', 1,
   }'::jsonb,
   '["76","81","80","134","112","100"]'::jsonb);
 
+-- ── SUPPLIER BILLS (flow 14a) ────────────────────────────────────────────────────────────────────
+-- What the business PAID, as opposed to what it charged. These exist so the material-cost lookup can
+-- be PROVEN rather than merely typechecked: its query reads line items out of `attributes.items`,
+-- and a jsonb path that is subtly wrong returns nothing, which is indistinguishable from "we have
+-- never bought that".
+--
+-- One bill deliberately carries NO items — a real state, because `syncBills` only fetches line-item
+-- detail for the most recent N and stores the rest with totals only. A lookup must skip it rather
+-- than trip over it.
+INSERT INTO entities (tenant_id, kind, mode, source_system, source_id, synced_at,
+                      display_name, attributes)
+VALUES
+  ('00000000-0000-4000-a000-000000000001','bill','projected','xero','BILL-7781', now(),
+   'BILL-7781 Bunnings Trade',
+   '{"amount": 1284.00, "currency": "AUD", "supplier": "Bunnings Trade", "invoice_number": "BILL-7781",
+     "date": "2026-03-14", "status": "PAID",
+     "items": [
+       {"description": "90x45 H3 treated pine 5.4m", "quantity": 40, "unitAmount": 18.40, "account": "310"},
+       {"description": "Galvanised bugle screws 65mm box 500", "quantity": 4, "unitAmount": 42.00, "account": "310"}
+     ]}'::jsonb),
+
+  ('00000000-0000-4000-a000-000000000001','bill','projected','xero','BILL-7802', now() - interval '1 day',
+   'BILL-7802 Metro Steel Supplies',
+   '{"amount": 6420.00, "currency": "AUD", "supplier": "Metro Steel Supplies", "invoice_number": "BILL-7802",
+     "date": "2026-05-02", "status": "AUTHORISED",
+     "items": [
+       {"description": "Universal beam 200UB25 9m", "quantity": 6, "unitAmount": 890.00, "account": "310"},
+       {"description": "Treated pine bearer 140x45", "quantity": 12, "unitAmount": 31.50, "account": "310"}
+     ]}'::jsonb),
+
+  -- Header only: past the detail cap at sync time. The lookup must skip it silently.
+  ('00000000-0000-4000-a000-000000000001','bill','projected','xero','BILL-7003', now() - interval '9 days',
+   'BILL-7003 Southern Hire',
+   '{"amount": 940.00, "currency": "AUD", "supplier": "Southern Hire", "invoice_number": "BILL-7003",
+     "date": "2025-11-20", "status": "PAID", "items": []}'::jsonb);
+
 COMMIT;
 
 -- Expected first sweep against this seed (the acceptance criteria for step 2):

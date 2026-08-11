@@ -187,6 +187,107 @@ export async function syncInvoices(
 }
 
 /**
+ * Pull SUPPLIER BILLS (Xero `ACCPAY`) into the entity index — flow 14a.
+ *
+ * `syncInvoices` above reads `ACCREC`: money owed TO the business. This reads the other direction —
+ * what the business PAID — because that is where material costs live, and it is the only source of
+ * them we are already authenticated to.
+ *
+ * ⚠️ WHY THIS COSTS A SECOND CALL PER BILL, AND WHY THAT IS BOUNDED.
+ *
+ * The list endpoint returns SUMMARISED invoices: a total and a contact, no `LineItems`. The total is
+ * useless for a material cost — "we paid this supplier $8,400 in March" does not tell you what
+ * decking cost. The line items are only on the individual GET, so the detail fetch is unavoidable.
+ *
+ * It is capped at `detailLimit` (default 25, most recent first) because Xero allows 60 calls a
+ * minute and a business with 900 bills would otherwise spend fifteen minutes and its entire rate
+ * limit on a sync nobody asked to be exhaustive. Bills past the cap are still stored with their
+ * totals — present, searchable, just without item detail — so the boundary degrades rather than
+ * disappearing. What the cap left behind is logged, because a bound that truncates silently reads as
+ * "everything was covered".
+ */
+export async function syncBills(
+  supabase: SupabaseClient,
+  connection: XeroConnection,
+  clientId: string,
+  clientSecret: string,
+  options: { detailLimit?: number } = {},
+): Promise<{ upserted: number; withDetail: number; skippedDetail: number }> {
+  const detailLimit = options.detailLimit ?? 25;
+  const token = await accessTokenFor(supabase, connection, clientId, clientSecret);
+
+  // AUTHORISED and PAID both count: a paid bill is still evidence of what something cost, and for
+  // this purpose it is BETTER evidence — the money actually moved.
+  const data = await xeroGet(
+    '/Invoices?where=Type=="ACCPAY"%20AND%20(Status=="AUTHORISED"%20OR%20Status=="PAID")&order=Date%20DESC',
+    token,
+    connection.provider_org_id,
+  );
+
+  const bills = (data.Invoices ?? []) as any[];
+  let upserted = 0;
+  let withDetail = 0;
+
+  for (const [index, bill] of bills.entries()) {
+    let items: Array<{ description: string; quantity: number | null; unitAmount: number | null; account: string | null }> = [];
+
+    if (index < detailLimit) {
+      try {
+        const detail = await xeroGet(`/Invoices/${bill.InvoiceID}`, token, connection.provider_org_id);
+        const lineItems = (detail.Invoices?.[0]?.LineItems ?? []) as any[];
+        items = lineItems
+          .filter((li) => (li.Description ?? '').trim())
+          .map((li) => ({
+            description: String(li.Description).trim(),
+            quantity: typeof li.Quantity === 'number' ? li.Quantity : null,
+            unitAmount: typeof li.UnitAmount === 'number' ? li.UnitAmount : null,
+            account: li.AccountCode ?? null,
+          }));
+        if (items.length) withDetail += 1;
+      } catch (e) {
+        // One bill's detail failing must not lose the rest of the sync. The header is still worth
+        // storing; it simply has no item breakdown, which the reader can tell from an empty `items`.
+        console.warn(`[xero] bill detail ${bill.InvoiceID} failed: ${String((e as Error).message).slice(0, 120)}`);
+      }
+    }
+
+    const { error } = await supabase.from('entities').upsert(
+      {
+        tenant_id: connection.tenant_id,
+        kind: 'bill',
+        mode: 'projected',
+        source_system: 'xero',
+        source_id: bill.InvoiceID,
+        synced_at: new Date().toISOString(),
+        display_name: `${bill.InvoiceNumber ?? 'Bill'} ${bill.Contact?.Name ?? ''}`.trim(),
+        attributes: {
+          amount: bill.Total,
+          currency: bill.CurrencyCode,
+          supplier: bill.Contact?.Name ?? null,
+          invoice_number: bill.InvoiceNumber,
+          date: bill.DateString ?? null,
+          status: bill.Status,
+          items,
+        },
+      },
+      { onConflict: 'tenant_id,source_system,source_id' },
+    );
+    if (!error) upserted += 1;
+  }
+
+  const skippedDetail = Math.max(0, bills.length - detailLimit);
+  if (skippedDetail > 0) {
+    console.warn(
+      `[xero] ${bills.length} bills synced, item detail fetched for the ${detailLimit} most recent — ` +
+        `${skippedDetail} stored with totals only. Raise --detail to widen.`,
+    );
+  }
+
+  await supabase.from('connections').update({ last_synced_at: new Date().toISOString() }).eq('id', connection.id);
+  return { upserted, withDetail, skippedDetail };
+}
+
+/**
  * The decision half. Asks Xero whether this invoice is still owing, immediately before we act on it.
  *
  * `AmountDue <= 0` or a status of PAID/VOIDED/DELETED means the trigger has evaporated since the

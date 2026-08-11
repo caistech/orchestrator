@@ -310,7 +310,8 @@ Design intent lives in the root markdown files (`ORCHESTRATOR_SPEC.md`, `EXECUTI
 ## 10. Verification
 
 CI (`.github/workflows/gate.yml`) runs on every PR, every push to main, and **daily** — typecheck,
-tests, the caller-auth boundary checks, the tool-register checks, build, then
+tests, the caller-auth boundary checks, the tool-register checks, build, **the database probes**
+(migrate + seed + query-probe against a separate `orchestrator-ci` database), then
 `portfolio-gate-deploy-status`, which asserts
 that production is running the commit we think it is. The daily run matters as much as the push one:
 the outage that check exists for was a credential that expired *between* pushes, so no commit would

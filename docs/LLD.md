@@ -434,6 +434,9 @@ reading, which is weaker — the gate and jurisdiction invariants are the obviou
 | `npm run check:auth` | 12 caller/tenant boundary assertions |
 | `npm run check:tools` | the register and its executors agree; no read tool is executable; every emitted kind is registered |
 | `npm run build` | the production build Vercel runs |
+| `npm run db:migrate -- --ref <ref> --expect "<name>"` | what schema WOULD be applied; refuses a project whose name is not the expected one |
+| `npm run db:seed -- … --apply` | the fixtures, as a separate verb — the seed DELETEs and re-INSERTs |
+| `npm run probe:pricing` | flow 13's query against a live database: returns rows, filters, escapes LIKE |
 | `npm run sweep -- --tenant <uuid> --dry-run` | what *would* be decided, writing nothing |
 | `npm run drain -- --dry-run` | what *would* be sent |
 | `npm run drain -- --redirect you@real.com` | a real send, to yourself |

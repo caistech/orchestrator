@@ -95,11 +95,16 @@ jobs:
       # The name guard in db-migrate refuses to touch a project whose NAME is not the expected one —
       # 35 Supabase projects exist and idempotent SQL applied to the wrong one does not complain.
       #
-      # SKIPS LOUDLY while no test database is provisioned. That is a warning rather than silence
-      # because a step that quietly does nothing is indistinguishable from one that passed — the
-      # failure this whole gate was written to end. It is NOT a permanent opt-out: the moment
-      # SUPABASE_TEST_REF exists, this runs on every push.
-      - name: Database probes (skips loudly until a test database exists)
+      # LIVE since 2026-08-11 against `orchestrator-ci` (rhemdzecybngmcbujpfn) — a SEPARATE database
+      # from production `orchestrator` (xuzvurmprexhalnxgsdu). The two can never be confused by
+      # accident: db-migrate refuses any project whose NAME is not the one the caller expected.
+      #
+      # The skip branch below is retained rather than deleted, because a fork or a fresh clone has no
+      # secrets and should say so LOUDLY rather than pass in silence — a step that quietly does
+      # nothing is indistinguishable from one that passed, which is the failure this gate exists to
+      # end. Verified on the first live run: the log shows `target : orchestrator-ci`, seven
+      # migrations, the seed, and six green probes, not the warning.
+      - name: Database probes (migrate + seed + probe against orchestrator-ci)
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
           TEST_REF: ${{ vars.SUPABASE_TEST_REF }}

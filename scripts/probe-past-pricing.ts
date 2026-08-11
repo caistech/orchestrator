@@ -71,8 +71,11 @@ async function main() {
   console.log('');
 
   if (!stock?.length) {
+    // exitCode + return, never process.exit(): with a supabase fetch still closing, process.exit()
+    // aborts on a libuv assertion and reports 127 "crashed" instead of 1 "found a problem".
     console.error('nothing priced for this tenant — the probe cannot prove anything. Seed it first.');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
 
   // 1 — the real path: a client name the index knows.

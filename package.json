@@ -16,7 +16,9 @@
     "start": "next start",
     "xero:sync": "tsx scripts/xero-sync.ts",
     "learn:quotes": "tsx scripts/learn-quote-format.ts",
-    "probe:pricing": "tsx scripts/probe-past-pricing.ts"
+    "probe:pricing": "tsx scripts/probe-past-pricing.ts",
+    "db:migrate": "tsx scripts/db-migrate.ts",
+    "db:seed": "tsx scripts/db-migrate.ts --seed"
   },
   "dependencies": {
     "@caistech/abn-lookup": "^0.1.1",

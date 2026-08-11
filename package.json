@@ -15,7 +15,8 @@
     "build": "next build",
     "start": "next start",
     "xero:sync": "tsx scripts/xero-sync.ts",
-    "learn:quotes": "tsx scripts/learn-quote-format.ts"
+    "learn:quotes": "tsx scripts/learn-quote-format.ts",
+    "probe:pricing": "tsx scripts/probe-past-pricing.ts"
   },
   "dependencies": {
     "@caistech/abn-lookup": "^0.1.1",

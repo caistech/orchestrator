@@ -4,16 +4,36 @@
 import { senderFromEnv } from '@caistech/email-compliance';
 import { createEmailSender } from '@caistech/email-send';
 
+import { connectionBlurb, permissionSummary } from '../src/connectors/google-consent-copy';
+import { isDriveAccess, isGmailAccess, type DriveAccess, type GmailAccess } from '../src/connectors/google';
+
 const RESEND_API_KEY = process.env.RESEND_API_KEY!;
 const FROM_EMAIL = 'noreply@updates.corporateaisolutions.com'; // The only verified sender
 
 interface SendTestEmailOptions {
   to: string;
   connectionLink?: string;
+  /**
+   * The levels this invitation is FOR. They are not decoration: the permission list is generated
+   * from them, so an email describing a grant the owner was never offered is not possible here.
+   * Least privilege by default — an invitation that over-describes is the failure worth avoiding.
+   */
+  driveAccess?: DriveAccess;
+  gmailAccess?: GmailAccess;
 }
 
 async function sendTestConnectionEmail(opts: SendTestEmailOptions) {
-  const { to, connectionLink = 'https://connect.kiraexec.com/api/connect/google?t=TEST_TOKEN_REPLACE_ME' } = opts;
+  const {
+    to,
+    connectionLink = 'https://connect.kiraexec.com/api/connect/google?t=TEST_TOKEN_REPLACE_ME',
+    driveAccess = 'picked',
+    gmailAccess = 'none',
+  } = opts;
+
+  // What this connection actually grants, in his words, derived from the scopes rather than typed
+  // out here. See google-consent-copy.ts for why that is not a stylistic preference.
+  const { can, cannot } = permissionSummary(driveAccess, gmailAccess);
+  const blurb = connectionBlurb(driveAccess, gmailAccess);
 
   if (!RESEND_API_KEY) {
     throw new Error('RESEND_API_KEY not set in environment');
@@ -54,7 +74,7 @@ async function sendTestConnectionEmail(opts: SendTestEmailOptions) {
   
   <p>Hi <strong>${displayName}</strong>,</p>
   
-  <p>To give Kira access to your Google Drive, Gmail, and Contacts, click the button below:</p>
+  <p>To connect ${blurb} to Kira, click the button below:</p>
   
   <div style="text-align: center; margin: 30px 0;">
     <a href="${connectionLink}" style="display: inline-block; background: #2563eb; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px;">Connect Google Drive</a>
@@ -93,32 +113,27 @@ async function sendTestConnectionEmail(opts: SendTestEmailOptions) {
     </ol>
   </div>
   
-  <!-- What Kira Can Do -->
+  <!-- What Kira Can Do — generated from the scopes this link actually requests -->
   <h3 style="color: #111827; margin-top: 32px;">What Kira will be able to do:</h3>
   <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
-    <tr>
-      <td style="padding: 8px 0; color: #059669;">✓ Read files you've shared</td>
-      <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">(to find quotes, invoices, client info)</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px 0; color: #059669;">✓ Send emails on your behalf</td>
-      <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">(quotes, follow-ups, reminders)</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px 0; color: #059669;">✓ Look up contacts</td>
-      <td style="padding: 8px 0; font-size: 14px; color: #6b7280;">(to find customer details)</td>
-    </tr>
+    ${can
+      .map(
+        (line) =>
+          `<tr><td style="padding: 8px 0; color: #059669;">✓ ${line}</td></tr>`,
+      )
+      .join('\n    ')}
   </table>
-  
+
+  <h3 style="color: #111827; margin-top: 24px;">What it will not be able to do:</h3>
   <table style="width: 100%; border-collapse: collapse; margin: 16px 0;">
+    ${cannot
+      .map(
+        (line) =>
+          `<tr><td style="padding: 8px 0; color: #dc2626;">✗ ${line}</td></tr>`,
+      )
+      .join('\n    ')}
     <tr>
-      <td style="padding: 8px 0; color: #dc2626;">✗ Kira CANNOT access your entire Drive</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px 0; color: #dc2626;">✗ Kira CANNOT read your personal emails</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px 0; color: #dc2626;">✗ Actions requiring approval still come to you first</td>
+      <td style="padding: 8px 0; color: #dc2626;">✗ Act without you — anything that leaves your business comes to you for approval first</td>
     </tr>
   </table>
   
@@ -142,9 +157,9 @@ async function sendTestConnectionEmail(opts: SendTestEmailOptions) {
       <strong>P.S.</strong> Once connected, you'll be able to ask Kira things like:<br>
       <span style="color: #3b82f6;">
         • "Find the quote I sent to John last week"<br>
-        • "Email my customer the updated invoice"<br>
+        • "Draft a reply to my customer with the updated invoice"<br>
         • "What's Sarah's phone number?"<br>
-        • "Send a follow-up to all unpaid quotes"
+        • "Write follow-ups for the quotes nobody has paid"
       </span>
     </p>
   </div>
@@ -162,7 +177,7 @@ async function sendTestConnectionEmail(opts: SendTestEmailOptions) {
 
   const textBody = `Hi ${displayName},
 
-To give Kira access to your Google Drive, Gmail, and Contacts, please click the link below:
+To connect ${blurb} to Kira, please click the link below:
 
 ${connectionLink}
 
@@ -177,8 +192,8 @@ When you click the link, Google will show a screen that says:
 This is expected and safe to proceed. Here's what's happening:
 
 • We're currently in Google's verification process (this is standard for new integrations)
-• Your data is completely secure and only accessible to you
-• We only request access to files YOU explicitly share with Kira
+• We only ask for the access listed below — nothing else
+• You can untick anything on the Google screen, and Kira works with whatever you allow
 • You can revoke access anytime from your Google Account settings
 
 ---
@@ -195,13 +210,12 @@ TO COMPLETE THE CONNECTION:
 
 WHAT KIRA WILL BE ABLE TO DO:
 
-✓ Read files you've shared (to find quotes, invoices, client info)
-✓ Send emails on your behalf (quotes, follow-ups, reminders)
-✓ Look up contacts (to find customer email addresses and phone numbers)
+${can.map((line) => `✓ ${line}`).join('\n')}
 
-✗ Kira CANNOT access your entire Drive without permission
-✗ Kira CANNOT read your personal emails
-✗ All actions requiring approval still come to you first
+WHAT IT WILL NOT BE ABLE TO DO:
+
+${cannot.map((line) => `✗ ${line}`).join('\n')}
+✗ Act without you — anything that leaves your business comes to you for approval first
 
 ---
 
@@ -224,9 +238,9 @@ Dennis & the Kira Team
 
 P.S. Once connected, you'll be able to ask Kira things like:
 • "Find the quote I sent to John last week"
-• "Email my customer the updated invoice"
+• "Draft a reply to my customer with the updated invoice"
 • "What's Sarah's phone number?"
-• "Send a follow-up to all unpaid quotes"
+• "Write follow-ups for the quotes nobody has paid"
 
 ---
 🧪 TEST EMAIL - The connection link above is a placeholder.
@@ -255,14 +269,29 @@ P.S. Once connected, you'll be able to ask Kira things like:
 // Run if called directly
 const to = process.argv[2];
 const connectionLink = process.argv[3];
+const driveArg = process.argv[4] ?? 'picked';
+const gmailArg = process.argv[5] ?? 'none';
 
 if (!to) {
-  console.error('Usage: tsx scripts/send-test-connection-email.ts <email> [connectionLink]');
-  console.error('Example: tsx scripts/send-test-connection-email.ts mcmdennis+test@gmail.com');
+  console.error(
+    'Usage: tsx scripts/send-test-connection-email.ts <email> [connectionLink] [drive] [gmail]',
+  );
+  console.error('  drive: picked (default) | readonly | full');
+  console.error('  gmail: none (default) | draft | read');
+  console.error('Example: tsx scripts/send-test-connection-email.ts you@example.com "" picked draft');
   process.exit(1);
 }
 
-sendTestConnectionEmail({ to, connectionLink })
+// REFUSE a level we do not recognise rather than falling back to a default. A typo would otherwise
+// send an email describing 'picked' access over a link that grants 'full' — the exact mismatch
+// between what he was told and what he granted that this whole path exists to prevent.
+if (!isDriveAccess(driveArg) || !isGmailAccess(gmailArg)) {
+  console.error(`Unrecognised access level (drive="${driveArg}", gmail="${gmailArg}").`);
+  console.error('drive must be picked|readonly|full; gmail must be none|draft|read.');
+  process.exit(1);
+}
+
+sendTestConnectionEmail({ to, connectionLink, driveAccess: driveArg, gmailAccess: gmailArg })
   .then((result) => {
     console.log('✅ Email sent successfully!');
     console.log('Result:', JSON.stringify(result, null, 2));

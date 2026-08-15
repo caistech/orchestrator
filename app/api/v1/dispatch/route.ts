@@ -248,6 +248,25 @@ export async function POST(request: Request) {
       payload: {
         ...(body.payload ?? {}),
         kind,
+        // WHERE THE FINISHED MESSAGE GOES — lifted to the TOP LEVEL of the payload, deliberately.
+        //
+        // `classified` is spread in whole just below, so this value already reached the row at
+        // `payload.classified.delivery`. The approve route reads `payload.delivery`, found nothing,
+        // and fell through to 'send' — so every request to put a message in the owner's drafts would
+        // have been SENT instead, with the register green, the executor bound, the drain working, and
+        // the whole email.draft path looking wired while never once running.
+        //
+        // Top level rather than having the approver reach into `payload.classified`: the approver has
+        // no business knowing the classifier's shape, and coupling them means a change to one
+        // silently breaks the other, where the failure is an email leaving the building.
+        //
+        // Order is the contract. An explicit value from the caller wins, the classifier is the
+        // fallback, 'send' is the floor. Kira does not pass one today; when she does she is carrying
+        // the owner's own instruction and must outrank a regex over his words.
+        delivery:
+          (body.payload as { delivery?: string } | null | undefined)?.delivery ??
+          classified?.delivery ??
+          'send',
         classified: classified ?? undefined,
         // Recorded for QUOTES ONLY, and recorded even when null. "This quote used their format v3"
         // and "this quote is generic because they have no format yet" are both answers a reviewer

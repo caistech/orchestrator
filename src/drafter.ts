@@ -15,6 +15,8 @@
 // than a slow one.
 
 export type OwnedKind = 'quote' | 'email' | 'reminder';
+import { observeAiCall } from '@caistech/usage-meter';
+
 export const OWNED_KINDS: OwnedKind[] = ['quote', 'email', 'reminder'];
 
 export interface Classified {
@@ -99,29 +101,84 @@ function draftSystem(kind: OwnedKind, ownerName: string | null, formatInstructio
   return `${common} Draft a one-line reminder the owner will get back later, plus when it should fire.`;
 }
 
-async function askModel(apiKey: string, system: string, user: string): Promise<Record<string, unknown> | null> {
+const MODEL = 'gpt-4.1-mini';
+
+/**
+ * One model call, observed.
+ *
+ * WHAT THE METERING BUYS, and it is not primarily the money. This function swallows every error and
+ * returns null — deliberately, and the dispatch route says so twenty lines below where it consumes
+ * the result: "a 429, a timeout, a malformed completion all look identical to 'no draft'." That is
+ * true of the RETURN VALUE and it need not be true of the record. `observeAiCall` writes a row for
+ * the failed call as well as the successful one, with the status and error class separated, so the
+ * three stop being the same event. A failed call emits no token usage at all, which is exactly why
+ * usage rows alone could never answer this.
+ *
+ * THE NULL-RETURN BIAS IS PRESERVED EXACTLY. `observeAiCall` rethrows the original error by
+ * reference, on purpose, so that a caller's deliberate failure posture is not rewritten by the
+ * instrumentation. Ours is "return null and let the route decide", so the existing try/catch stays
+ * outermost and still owns that decision. Nothing above this line changes behaviour.
+ *
+ * A NON-2xx NOW THROWS rather than returning early. It is the same outcome for the caller — the
+ * catch below returns null either way — but it reaches the recorder, and the status code travels in
+ * the message because `classifyError` reads the message to separate rate_limit from auth from
+ * server. A 429 that reads as "other" is a row that cannot drive a retry policy.
+ *
+ * The meter no-ops entirely until USAGE_INGEST_* is configured, so this is inert until the cockpit
+ * is pointed at.
+ */
+async function askModel(
+  apiKey: string,
+  system: string,
+  user: string,
+  operation: string,
+): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[drafter] model → ${res.status}`);
-      return null;
-    }
-    const json = await res.json();
-    return JSON.parse(json?.choices?.[0]?.message?.content ?? '{}');
+    return await observeAiCall(
+      { operation, provider: 'openai', modelRequested: MODEL, schemaName: 'json_object' },
+      async (ctx) => {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: MODEL,
+            temperature: 0,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error(`[drafter] openai chat ${res.status}`);
+
+        const json = await res.json();
+        // prompt/completion only. OpenAI's `cached_tokens` is deliberately NOT reported as a cache
+        // unit — whether it is a SUBSET of prompt_tokens is ambiguous in OpenAI's own documentation,
+        // and the package refuses it for the same reason: a guess here double-counts real input
+        // spend the moment anyone prices it.
+        ctx.usage({
+          inputTokens: json?.usage?.prompt_tokens,
+          outputTokens: json?.usage?.completion_tokens,
+        });
+        // What actually served it. Equal to MODEL today; it stops being equal the moment anything
+        // routes, and that divergence is the whole reason the field exists.
+        if (typeof json?.model === 'string') ctx.modelUsed(json.model);
+
+        try {
+          const parsed = JSON.parse(json?.choices?.[0]?.message?.content ?? '{}');
+          ctx.structuredValid(true);
+          return parsed;
+        } catch (parseError) {
+          // The free quality signal: we asked for json_object and did not get one. Recorded as a
+          // failed call rather than an empty draft, which is what it is.
+          ctx.structuredValid(false);
+          throw parseError;
+        }
+      },
+    );
   } catch (e) {
-    console.error('[drafter] failed:', e);
+    console.error(`[drafter] ${operation} failed:`, e);
     return null;
   }
 }
@@ -193,7 +250,10 @@ export function deliveryFromUtterance(utterance: string): 'draft' | 'send' {
 }
 
 export async function classifyIntent(apiKey: string, utterance: string): Promise<Classified | null> {
-  const raw = await askModel(apiKey, CLASSIFY_SYSTEM, utterance);
+  // Named separately from the draft call. They share a function and a model and are different
+  // questions with different prompts and different failure meanings, and a single 'chat' bucket
+  // would average them into a number that describes neither.
+  const raw = await askModel(apiKey, CLASSIFY_SYSTEM, utterance, 'classify_intent');
   if (!raw) return null;
   const kind = String(raw.kind ?? 'unsupported');
   return {
@@ -229,7 +289,12 @@ export async function draftForIntent(
     (cls.due_hint ? `When: ${cls.due_hint}\n` : '') +
     (context ? `Context you already hold: ${JSON.stringify(context).slice(0, 1500)}\n` : '');
 
-  const raw = await askModel(apiKey, draftSystem(kind, ownerName, formatInstructions), input);
+  const raw = await askModel(
+    apiKey,
+    draftSystem(kind, ownerName, formatInstructions),
+    input,
+    `draft_${kind}`,
+  );
   if (!raw?.summary || !raw?.preview) return null;
   return { summary: String(raw.summary), preview: String(raw.preview) };
 }

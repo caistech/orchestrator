@@ -24,6 +24,7 @@
     "@caistech/abn-lookup": "^0.1.1",
     "@caistech/email-compliance": "^0.4.0",
     "@caistech/email-send": "^0.2.0",
+    "@caistech/usage-meter": "^0.3.0",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.45.0",
     "next": "^16.2.12",

@@ -15,6 +15,7 @@
 // business-agnostic quote in every one of those cases, which is worse output but honest output.
 
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { observeAiCall } from '@caistech/usage-meter';
 
 import { accessTokenFor, googleConnectionFor, listFiles, readFileText, type DriveFile } from '../connectors/google';
 
@@ -103,29 +104,63 @@ Reply with ONLY a JSON object:
 Use null for anything the samples do not show. Never invent a section they do not use.
 `.trim();
 
-async function askModel(apiKey: string, system: string, user: string): Promise<Record<string, unknown> | null> {
+const MODEL = 'gpt-4.1-mini';
+
+/**
+ * The twin of `askModel` in `drafter.ts`, instrumented the same way and for the same reasons —
+ * see that one for why the non-2xx throws and why the null-return posture is preserved.
+ *
+ * It is a twin rather than a shared helper, which is worth naming rather than quietly leaving: two
+ * byte-identical OpenAI clients in one repo is exactly the duplication `@caistech/ai-client`'s
+ * `runChat()` was scoped from — the catalog counts "a seventh in Orchestrator", and this is it.
+ * Collapsing both onto that package is the right follow-up and a separate change; doing it inside a
+ * metering commit would mean a behavioural rewrite of the draft path riding along with telemetry,
+ * and the first thing to go wrong would be impossible to attribute to either.
+ */
+async function askModel(
+  apiKey: string,
+  system: string,
+  user: string,
+  operation: string,
+): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gpt-4.1-mini',
-        temperature: 0,
-        response_format: { type: 'json_object' },
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[quote-format] model → ${res.status}`);
-      return null;
-    }
-    const json = await res.json();
-    return JSON.parse(json?.choices?.[0]?.message?.content ?? '{}');
+    return await observeAiCall(
+      { operation, provider: 'openai', modelRequested: MODEL, schemaName: 'json_object' },
+      async (ctx) => {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: MODEL,
+            temperature: 0,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+        });
+        if (!res.ok) throw new Error(`[quote-format] openai chat ${res.status}`);
+
+        const json = await res.json();
+        ctx.usage({
+          inputTokens: json?.usage?.prompt_tokens,
+          outputTokens: json?.usage?.completion_tokens,
+        });
+        if (typeof json?.model === 'string') ctx.modelUsed(json.model);
+
+        try {
+          const parsed = JSON.parse(json?.choices?.[0]?.message?.content ?? '{}');
+          ctx.structuredValid(true);
+          return parsed;
+        } catch (parseError) {
+          ctx.structuredValid(false);
+          throw parseError;
+        }
+      },
+    );
   } catch (e) {
-    console.error('[quote-format] model call failed:', e);
+    console.error(`[quote-format] ${operation} failed:`, e);
     return null;
   }
 }
@@ -248,7 +283,7 @@ export async function learnQuoteFormat(
     .map((s, i) => `--- SAMPLE ${i + 1} (${s.file.name}) ---\n${s.text}`)
     .join('\n\n');
 
-  const raw = await askModel(options.apiKey, EXTRACT_SYSTEM, user);
+  const raw = await askModel(options.apiKey, EXTRACT_SYSTEM, user, 'quote_format_extract');
   if (!raw) {
     return { ok: false, failure: 'model_unavailable', detail: 'The extraction model returned nothing.' };
   }

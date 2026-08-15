@@ -12,6 +12,8 @@
 
 import { createClient } from '@supabase/supabase-js';
 
+import { flushMeter } from '@caistech/usage-meter';
+
 import {
   currentQuoteFormat,
   learnQuoteFormat,
@@ -84,7 +86,15 @@ async function main() {
   console.log('It is EXTRACTED, not confirmed — have the owner read it before telling him it is his.');
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exitCode = 1;
-});
+main()
+  .catch((e) => {
+    console.error(e);
+    process.exitCode = 1;
+  })
+  // Insurance rather than load-bearing, and worth being accurate about which: unlike the serverless
+  // dispatch route, Node keeps this process alive while a fetch is pending, so the metering report
+  // would land on its own. It is here because that guarantee dies the moment somebody replaces
+  // `process.exitCode = 1` with `process.exit(1)` — a change that looks like tidying and silently
+  // stops this script's model calls being recorded. `.finally` covers every exit path, including
+  // the four early `return`s inside main().
+  .finally(flushMeter);

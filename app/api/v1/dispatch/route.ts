@@ -19,6 +19,8 @@ import { NextResponse } from 'next/server';
 import { serviceClient } from '@/lib/supabase';
 import { CONTRACT_VERSION, type DispatchRequest } from '@/src/contract';
 import { authoriseCaller } from '@/src/caller-auth';
+import { flushMeter } from '@caistech/usage-meter';
+
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
 import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
@@ -209,6 +211,19 @@ export async function POST(request: Request) {
       );
     }
   }
+
+  // GET THE TELEMETRY OFF THE BOX BEFORE THE BOX GOES AWAY.
+  //
+  // Metering reports are fire-and-forget so they add no latency to the owner's request — which means
+  // on a serverless runtime they are racing the freeze. Vercel may suspend the instance the moment
+  // the response is returned, taking an un-awaited fetch with it, and the row simply never arrives.
+  // Nothing errors; the dashboard is just quietly short, which is the failure mode that reads as
+  // "we barely use the model" rather than as a bug.
+  //
+  // Placed here, at the end of the block that makes the calls, rather than before each `return`
+  // below: there are three of those and a fourth would silently miss it. Costs nothing when nothing
+  // was metered, and never throws.
+  await flushMeter();
 
   const holding = !!drafted;
 

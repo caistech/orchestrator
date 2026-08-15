@@ -64,30 +64,73 @@ const DRIVE_SCOPE: Record<DriveAccess, string> = {
  * degrades to asking him for the address, exactly as it does today.
  */
 /**
- * GMAIL DRAFTS — requested, and wider than the job, which is a fact rather than a preference.
+ * GMAIL — CHOSEN PER TENANT, exactly as Drive is, and for the same reason.
  *
- * `gmail.compose` is the narrowest scope Google publishes that can create a draft, and it also
- * permits SENDING messages and drafts. There is no draft-only scope. So the token this grants CAN
- * send, and the only thing that stops it is `gmail-draft.ts`, which is written to make that
- * structurally hard: one endpoint, the verb as a literal, no parameter that could carry a send path.
+ * The owner decides how much of his mailbox this can see, at consent time, and the grant enforces
+ * it. That is a REAL boundary rather than a convention: a tenant on 'draft' holds a token that
+ * physically cannot read their mail, whatever any module or prompt later does. It is the version of
+ * "separate capabilities" that actually holds, because the vendor enforces it — three modules
+ * sharing one wide token would all have been able to do everything.
  *
- * ⚠️ It is RESTRICTED rather than sensitive, unlike contacts. On an app already requesting
- * `auth/drive` or `drive.readonly` that changes no tier; on `drive.file` it does, and it raises the
- * Google verification bar accordingly. Worth knowing before this reaches many owners.
+ * It stops at the scope edge, and that limit is worth stating: `gmail.compose` is the narrowest scope
+ * Google publishes that can create a draft, and it ALSO permits sending. There is no draft-only
+ * scope. So WITHIN a grant the module discipline remains the only control — see `gmail-draft.ts`,
+ * which is deliberately one endpoint, one verb, no path parameter.
  *
- * ⚠️ EXISTING OWNERS DO NOT GET IT BY UPGRADE. A scope added here is only carried by tokens issued
- * AFTER it; every connection made before must be re-consented. Nothing assumes otherwise —
- * `hasGmailScope` reads back what actually arrived, and the drain skips with a specific reason
- * ("the Google connection predates Gmail access") rather than failing in a way that reads as a bug.
+ *   none  — no Gmail at all. The honest default for an owner who wants none of it.
+ *   draft — write into his drafts. He reviews and sends himself, from his own address.
+ *   read  — additionally read the mailbox, so "did Roger ever reply?" has an answer.
+ *
+ * ⚠️ `gmail.send` is deliberately NEVER requested. Outbound goes through Resend so it carries the
+ * tenant's identity, the Spam Act footer and the approval gate; sending from Gmail would route
+ * around the compliance path this system is built on.
+ *
+ * ⚠️ VERIFICATION IS PER-APP, NOT PER-TENANT. Google reviews the UNION of everything this app can
+ * request, so choosing 'none' for a customer changes their exposure and not the submission. What
+ * per-tenant choice buys is blast radius — which is a sales asset as much as a security one, for the
+ * owner who asks what this can see before he connects it.
+ *
+ * ⚠️ NOBODY IS UPGRADED BY A CODE CHANGE. A scope added here reaches tokens issued AFTER it; every
+ * existing connection must re-consent. Nothing assumes otherwise — `grantedGmailAccess` reads back
+ * what actually arrived, and callers degrade with a specific reason rather than failing obscurely.
  */
-const GMAIL_SCOPE = 'https://www.googleapis.com/auth/gmail.compose';
+export type GmailAccess = 'none' | 'draft' | 'read';
 
-export function scopesFor(access: DriveAccess): string {
-  return [...BASE_SCOPES, DRIVE_SCOPE[access], ...CONTACTS_SCOPES, GMAIL_SCOPE].join(' ');
+const GMAIL_SCOPE: Record<GmailAccess, string[]> = {
+  none: [],
+  draft: ['https://www.googleapis.com/auth/gmail.compose'],
+  // Read is ADDITIVE — reading a mailbox is not a substitute for being able to draft in it, and an
+  // owner who chose 'read' has chosen more, never something else.
+  read: [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.compose',
+  ],
+};
+
+export function scopesFor(access: DriveAccess, gmail: GmailAccess = 'none'): string {
+  return [...BASE_SCOPES, DRIVE_SCOPE[access], ...CONTACTS_SCOPES, ...GMAIL_SCOPE[gmail]].join(' ');
 }
 
 export function isDriveAccess(value: unknown): value is DriveAccess {
   return value === 'full' || value === 'readonly' || value === 'picked';
+}
+
+export function isGmailAccess(value: unknown): value is GmailAccess {
+  return value === 'none' || value === 'draft' || value === 'read';
+}
+
+/**
+ * What Gmail access actually ARRIVED — never what was asked for.
+ *
+ * The twin of `grantedDriveAccess`, and it exists for the identical reason: a consent screen lets
+ * the owner untick scopes individually, so requesting 'read' and receiving it are different facts.
+ * Ordered widest-first so a connection carrying both scopes reports 'read'.
+ */
+export function grantedGmailAccess(scope: string | undefined | null): GmailAccess {
+  const granted = (scope ?? '').split(/\s+/);
+  if (GMAIL_SCOPE.read.every((s) => granted.includes(s))) return 'read';
+  if (GMAIL_SCOPE.draft.every((s) => granted.includes(s))) return 'draft';
+  return 'none';
 }
 
 /**
@@ -107,13 +150,15 @@ export function consentUrl(params: {
   redirectUri: string;
   state: string;
   access: DriveAccess;
+  /** How much of the mailbox he asked for. Omitted means none — never "some by default". */
+  gmail?: GmailAccess;
   loginHint?: string | null;
 }): string {
   const url = new URL(AUTH_URL);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', params.clientId);
   url.searchParams.set('redirect_uri', params.redirectUri);
-  url.searchParams.set('scope', scopesFor(params.access));
+  url.searchParams.set('scope', scopesFor(params.access, params.gmail ?? 'none'));
   url.searchParams.set('state', params.state);
   url.searchParams.set('access_type', 'offline');
   url.searchParams.set('prompt', 'consent');

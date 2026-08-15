@@ -19,6 +19,14 @@ export interface ConnectClaim {
   tenantId: string;
   /** 'full' | 'readonly' | 'picked' — the owner's own choice, made in Kira's setup. */
   access: string;
+  /**
+   * 'none' | 'draft' | 'read' — how much of his mailbox, chosen by him alongside Drive.
+   *
+   * OPTIONAL, and absent means 'none'. Every ticket minted before this existed carries no value, and
+   * the safe reading of silence about a mailbox is "do not ask for it" — an owner who never chose
+   * Gmail must not be shown a consent screen requesting it because a field was missing.
+   */
+  gmail?: string | null;
   /** The Google address the owner said they use, passed to Google as a login hint. */
   email?: string | null;
   /** Where to send the browser once consent completes. */

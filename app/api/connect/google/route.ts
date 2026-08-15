@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 
 import { serviceClient } from '@/lib/supabase';
 import { verifyConnectToken } from '@/src/connect-token';
-import { consentUrl, isDriveAccess, type DriveAccess } from '@/src/connectors/google';
+import { consentUrl, isDriveAccess, isGmailAccess, type DriveAccess, type GmailAccess } from '@/src/connectors/google';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,6 +63,9 @@ export async function GET(request: Request) {
   }
 
   const access: DriveAccess = isDriveAccess(claim.access) ? claim.access : DEFAULT_DRIVE_ACCESS;
+  // Absent or unrecognised means NONE. An owner who never chose Gmail must not be shown a consent
+  // screen asking for his mailbox because a field was missing from an older ticket.
+  const gmail: GmailAccess = isGmailAccess(claim.gmail) ? claim.gmail : 'none';
 
   // Single-use, server-side. Not a signed cookie: the callback must be able to prove this request
   // started here even if the browser dropped a cookie on the round trip through Google.
@@ -74,7 +77,7 @@ export async function GET(request: Request) {
     // What they chose, recorded BEFORE they leave. The callback compares this against what Google
     // actually granted — a consent screen lets a user untick scopes, and asking for Drive is not
     // the same as receiving it.
-    metadata: { requested_access: access, expected_email: claim.email ?? null, return_to: claim.returnTo ?? null },
+    metadata: { requested_access: access, requested_gmail: gmail, expected_email: claim.email ?? null, return_to: claim.returnTo ?? null },
   });
   if (error) {
     console.error('[connect/google] could not record state:', error);
@@ -82,7 +85,7 @@ export async function GET(request: Request) {
   }
 
   return NextResponse.redirect(
-    consentUrl({ clientId, redirectUri, state, access, loginHint: claim.email }),
+    consentUrl({ clientId, redirectUri, state, access, gmail, loginHint: claim.email }),
   );
 }
 

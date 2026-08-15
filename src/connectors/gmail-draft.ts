@@ -29,7 +29,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { accessTokenFor, googleConnectionFor } from './google';
+import { accessTokenFor, googleConnectionFor, grantedGmailAccess } from './google';
 
 /** The one Gmail endpoint this module may touch. Not a parameter, and not built from one. */
 const DRAFTS_CREATE_URL = 'https://gmail.googleapis.com/gmail/v1/users/me/drafts';
@@ -107,14 +107,15 @@ export async function drainDraftOutbox(opts: {
     // reporting it as an error is how real errors get ignored.
     return { drafted: 0, failed: 0, skipped: true, reason: 'no Google connection for this tenant' };
   }
-  if (!hasGmailScope(connection.scopes)) {
+  if (grantedGmailAccess(connection.scopes) === 'none') {
     // The specific, actionable version. "Google is connected" and "Google is connected with Gmail"
     // are different facts, and an owner who connected before this shipped is in the second state.
     return {
       drafted: 0,
       failed: 0,
       skipped: true,
-      reason: 'the Google connection predates Gmail access — the owner needs to reconnect',
+      reason:
+        'this connection carries no Gmail access — either it predates it, or the owner chose not to grant it',
     };
   }
 
@@ -182,7 +183,11 @@ export async function drainDraftOutbox(opts: {
   return report;
 }
 
-/** Did the owner actually grant Gmail? Read back, never assumed — same rule as grantedContactsAccess. */
+/**
+ * Superseded by `grantedGmailAccess` in google.ts, which reports WHICH level arrived rather than a
+ * yes/no. Kept because the scope string it names is the one this module depends on, and a test pins
+ * that they agree — the two drifting apart is how a drain starts skipping every tenant silently.
+ */
 export function hasGmailScope(scope: string | undefined | null): boolean {
   return (scope ?? '').split(/\s+/).includes(GMAIL_DRAFT_SCOPE);
 }

@@ -9,12 +9,13 @@
 // from `google.ts` would not expect — the scope prefix Microsoft strips on the way back, and the
 // OData escape rule. Both are marked.
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   consentUrl,
   grantedFilesAccess,
   isFilesAccess,
+  microsoftTenant,
   odataQuoted,
   scopesFor,
   type FilesAccess,
@@ -124,6 +125,77 @@ describe('odataQuoted', () => {
     expect(odataQuoted("O'Brien's")).toBe("O''Brien''s");
     expect(odataQuoted('Quotes 2026')).toBe('Quotes 2026');
     expect(odataQuoted('')).toBe('');
+  });
+});
+
+describe('the tenant override', () => {
+  // Restored per-test rather than per-file: a leaked MICROSOFT_TENANT_OVERRIDE would silently change
+  // the audience for every other suite that builds a consent URL.
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it('is common when nothing is set — the state you fall into by accident', () => {
+    delete process.env.MICROSOFT_TENANT_OVERRIDE;
+    delete process.env.MICROSOFT_TENANT;
+    expect(microsoftTenant()).toBe('common');
+  });
+
+  it('IGNORES a tenant set without the flag — the whole point of the flag', () => {
+    // The failure this prevents: somebody fills in a plausible-looking env var, the app silently
+    // restricts to one organisation, and every other client's consent fails with a Microsoft error
+    // about their account not existing in the directory.
+    delete process.env.MICROSOFT_TENANT_OVERRIDE;
+    process.env.MICROSOFT_TENANT = '11111111-2222-3333-4444-555555555555';
+    expect(microsoftTenant()).toBe('common');
+  });
+
+  it('only accepts exactly "true" — not TRUE, not 1, not yes', () => {
+    process.env.MICROSOFT_TENANT = 'contoso.onmicrosoft.com';
+    for (const value of ['TRUE', 'True', '1', 'yes', 'on', '', ' true ']) {
+      process.env.MICROSOFT_TENANT_OVERRIDE = value;
+      expect(microsoftTenant(), `override=${JSON.stringify(value)}`).toBe('common');
+    }
+  });
+
+  it('uses the tenant when the flag is deliberately on', () => {
+    process.env.MICROSOFT_TENANT_OVERRIDE = 'true';
+    process.env.MICROSOFT_TENANT = 'contoso.onmicrosoft.com';
+    expect(microsoftTenant()).toBe('contoso.onmicrosoft.com');
+  });
+
+  it('THROWS when the flag is on and the tenant is missing — never falls back to common', () => {
+    // Fail-closed in the other direction. Falling back would be BROADER than what the operator asked
+    // for, and silently ignoring a restriction somebody switched on is the wrong way to be wrong
+    // about an audience boundary.
+    process.env.MICROSOFT_TENANT_OVERRIDE = 'true';
+    delete process.env.MICROSOFT_TENANT;
+    expect(() => microsoftTenant()).toThrow(/MICROSOFT_TENANT is empty/);
+
+    process.env.MICROSOFT_TENANT = '   ';
+    expect(() => microsoftTenant()).toThrow(/MICROSOFT_TENANT is empty/);
+  });
+
+  it('is read at CALL time, so the consent URL follows the current value', () => {
+    // A value baked at module scope could not be changed without a redeploy, and would make the
+    // tests above pass while production kept whatever was set at import.
+    const url = () =>
+      new URL(
+        consentUrl({
+          clientId: 'c',
+          redirectUri: 'https://connect.kiraexec.com/api/connect/microsoft/callback',
+          state: 's',
+          access: 'readwrite',
+        }),
+      ).pathname;
+
+    delete process.env.MICROSOFT_TENANT_OVERRIDE;
+    expect(url()).toContain('/common/');
+
+    process.env.MICROSOFT_TENANT_OVERRIDE = 'true';
+    process.env.MICROSOFT_TENANT = 'contoso.onmicrosoft.com';
+    expect(url()).toContain('/contoso.onmicrosoft.com/');
   });
 });
 

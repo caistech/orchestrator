@@ -37,15 +37,51 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-/**
- * `common` accepts both work/school accounts and personal Microsoft accounts, which is right for an
- * SME owner who may be on either and often does not know which. Overridable for a deployment that
- * must be restricted to organisational accounts (`organizations`) or to one named tenant.
- */
-const TENANT = process.env.MICROSOFT_TENANT || 'common';
-const AUTH_URL = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/authorize`;
-const TOKEN_URL = `https://login.microsoftonline.com/${TENANT}/oauth2/v2.0/token`;
 const GRAPH = 'https://graph.microsoft.com/v1.0';
+
+/**
+ * Which Microsoft sign-in audience this app talks to.
+ *
+ * `common` accepts both work/school accounts and personal Microsoft accounts, which is right for an
+ * SME owner who may be on either and frequently does not know which. It is the answer for every
+ * deployment we can currently foresee, so it is the answer you get unless somebody deliberately says
+ * otherwise.
+ *
+ * ⚠️ WHY THIS IS A FLAG AND NOT JUST A STRING. A bare `MICROSOFT_TENANT` looks like a config value
+ * that is helpful to fill in — and setting it to a tenant GUID silently restricts the app to ONE
+ * organisation. Every other client's consent then fails with a Microsoft error about the account not
+ * existing in the directory, which reads as their problem rather than ours. The blast radius is the
+ * whole customer base and the cause is one plausible-looking env var.
+ *
+ * So the override is gated: `MICROSOFT_TENANT_OVERRIDE` must be exactly `'true'` before
+ * `MICROSOFT_TENANT` is read at all. Anything else — unset, empty, `'false'`, `'TRUE'`, a typo — is
+ * `common`, because **the safe state should be the one you fall into by accident**. That is the same
+ * shape as `STRIPE_LIVE_MODE` in `@caistech/subscription-billing`, and it is here for the same
+ * reason: the dangerous setting should require an act of intent, and be visible in a diff.
+ *
+ * FAIL-CLOSED IN BOTH DIRECTIONS. Enabling the override without supplying a tenant throws rather
+ * than quietly falling back to `common` — falling back would be BROADER than what the operator
+ * asked for, and silently ignoring a restriction somebody deliberately switched on is the wrong way
+ * to be wrong about an audience boundary.
+ *
+ * Read at CALL TIME, never at module scope: a value baked at import cannot be changed without a
+ * redeploy, and module-scope construction is what has broken Next build-time page-data collection
+ * in this portfolio before.
+ */
+export function microsoftTenant(): string {
+  if (process.env.MICROSOFT_TENANT_OVERRIDE !== 'true') return 'common';
+
+  const tenant = (process.env.MICROSOFT_TENANT || '').trim();
+  if (!tenant) {
+    throw new Error(
+      'MICROSOFT_TENANT_OVERRIDE is true but MICROSOFT_TENANT is empty — set the tenant, or turn the override off.',
+    );
+  }
+  return tenant;
+}
+
+const authUrl = () => `https://login.microsoftonline.com/${microsoftTenant()}/oauth2/v2.0/authorize`;
+const tokenUrl = () => `https://login.microsoftonline.com/${microsoftTenant()}/oauth2/v2.0/token`;
 
 /**
  * What the owner is choosing between at setup.
@@ -158,7 +194,7 @@ export function consentUrl(params: {
   access: FilesAccess;
   loginHint?: string | null;
 }): string {
-  const url = new URL(AUTH_URL);
+  const url = new URL(authUrl());
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('client_id', params.clientId);
   url.searchParams.set('redirect_uri', params.redirectUri);
@@ -183,7 +219,7 @@ export async function exchangeCode(params: {
   clientSecret: string;
   redirectUri: string;
 }): Promise<MicrosoftTokens> {
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetch(tokenUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
@@ -251,7 +287,7 @@ export async function accessTokenFor(
     throw new Error(reason);
   }
 
-  const res = await fetch(TOKEN_URL, {
+  const res = await fetch(tokenUrl(), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({

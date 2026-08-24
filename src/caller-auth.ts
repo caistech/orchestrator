@@ -166,3 +166,24 @@ export function authoriseCaller(
 
   return { ok: true, caller: { id: caller.id, tenants: caller.tenants } };
 }
+
+/**
+ * Restrict an already-authorised request to specific caller identities.
+ *
+ * WHY THIS EXISTS. Tenant scoping answers "which businesses may this caller act for"; it does not
+ * answer "is this caller the kind that may run THIS operation". The Group B remediation gives each
+ * capability its own caller identity (kira-admin, kira-webhook, kira-public — see .env.example), so
+ * a leaked webhook secret cannot invoke admin endpoints and vice versa. An endpoint that serves one
+ * of those capabilities calls this right after `authoriseCaller` and names the identities it accepts.
+ *
+ * A denial is logged with the presenting identity — same reasoning as the tenant-scope log above:
+ * a mismatch is either a bug in the caller or an attempt, and either way it should be visible.
+ */
+export function callerIs(
+  auth: Extract<AuthResult, { ok: true }>,
+  ...allowed: readonly string[]
+): boolean {
+  if (allowed.includes(auth.caller.id)) return true;
+  console.error(`[auth] caller "${auth.caller.id}" invoked an endpoint restricted to [${allowed.join(', ')}]`);
+  return false;
+}

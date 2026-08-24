@@ -10,7 +10,7 @@
 // stated which tenant it was acting for. That is coherent with a single trusted caller and becomes a
 // cross-tenant hole the moment there are two — which is exactly what wiring F2K-Checkpoint in does.
 
-import { authoriseCaller, parseCallers, type CallerEnv } from '../src/caller-auth';
+import { authoriseCaller, callerIs, parseCallers, type CallerEnv } from '../src/caller-auth';
 
 const HEADER = 'x-orchestrator-secret';
 const TENANT_A = '11111111-1111-1111-1111-111111111111';
@@ -83,6 +83,26 @@ check(
   parseCallers({ ...SCOPED, ...LEGACY }).map((c) => c.id),
   ['f2k', 'legacy'],
 );
+
+// ── capability restriction (Group B prerequisite) ─────────────────────────────
+// Each migrated privileged endpoint names the caller identities it accepts, so a leaked webhook
+// secret cannot invoke admin endpoints and vice versa.
+const CAPS: CallerEnv = {
+  ORCHESTRATOR_CALLERS: JSON.stringify([
+    { id: 'kira-admin', secret: 'admin-secret', tenants: '*' },
+    { id: 'kira-webhook', secret: 'webhook-secret', tenants: '*' },
+  ]),
+};
+const adminAuth = authoriseCaller(req('admin-secret'), TENANT_A, CAPS);
+const webhookAuth = authoriseCaller(req('webhook-secret'), TENANT_A, CAPS);
+if (!adminAuth.ok || !webhookAuth.ok) {
+  failures += 1;
+  console.error('FAIL  capability checks: expected both caller secrets to authorise');
+} else {
+  check('admin caller passes kira-admin restriction', callerIs(adminAuth, 'kira-admin'), true);
+  check('webhook caller FAILS kira-admin restriction', callerIs(webhookAuth, 'kira-admin'), false);
+  check('multiple allowed identities accepted', callerIs(adminAuth, 'kira-webhook', 'kira-admin'), true);
+}
 
 console.log(failures === 0 ? '\nAll caller-auth checks passed.' : `\n${failures} check(s) FAILED.`);
 process.exitCode = failures === 0 ? 0 : 1;

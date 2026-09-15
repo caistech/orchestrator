@@ -1,0 +1,463 @@
+﻿{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "practice-prospect.json",
+  "title": "Practice Intelligence Prospect",
+  "description": "Structured intelligence record produced by Kira's Practice Intelligence capability and consumed by Orchestrator for execution.",
+  "type": "object",
+  "required": [
+    "practice",
+    "signal",
+    "technology",
+    "organisation",
+    "decision_makers",
+    "opportunity",
+    "outreach"
+  ],
+  "properties": {
+    "practice": {
+      "type": "object",
+      "description": "Core identity of the healthcare practice.",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "website": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "practice_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_group": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "signal": {
+      "type": "object",
+      "description": "The observable organisational signal that caused Kira to investigate the practice.",
+      "properties": {
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "signal_type": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "medical_receptionist_vacancy",
+            "medical_secretary_vacancy",
+            "practice_manager_vacancy",
+            "administration_vacancy",
+            "healthcare_staff_vacancy",
+            "practice_expansion",
+            "new_location",
+            "technology_change",
+            "patient_volume_signal",
+            "operational_pressure",
+            "other"
+          ]
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "technology": {
+      "type": "object",
+      "description": "Observed patient-access, booking, PMS and AI technology environment.",
+      "properties": {
+        "online_booking": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "booking_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "booking_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uri"
+        },
+        "pms": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ai_receptionist": {
+          "type": "boolean"
+        },
+        "ai_receptionist_provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "healthengine": {
+          "type": "boolean"
+        },
+        "hotdoc": {
+          "type": "boolean"
+        },
+        "other_patient_platform": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "technology_fit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "unknown",
+            "likely_compatible",
+            "requires_integration",
+            "platform_locked",
+            "existing_ai_solution"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "organisation": {
+      "type": "object",
+      "description": "Kira's organisational understanding of how the practice operates.",
+      "properties": {
+        "clinicians": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "services": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "team_size_signal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operational_signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observed_facts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "inferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "unknowns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "decision_makers": {
+      "type": "array",
+      "description": "People identified as potentially relevant to an approach or commercial decision.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "confidence",
+          "priority"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "organisation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "linkedin_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri"
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "email"
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "decision_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "owner",
+              "principal",
+              "director",
+              "managing_director",
+              "practice_manager",
+              "operations_manager",
+              "administrator",
+              "clinical_lead",
+              "unknown"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "priority": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+
+    "opportunity": {
+      "type": "object",
+      "description": "Kira's assessment of whether the observed organisation represents an opportunity.",
+      "required": [
+        "qualification",
+        "confidence"
+      ],
+      "properties": {
+        "qualification": {
+          "type": "string",
+          "enum": [
+            "direct_opportunity",
+            "potential_opportunity",
+            "platform_partnership",
+            "low_priority",
+            "exclude",
+            "insufficient_information"
+          ]
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "observed_problem": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hypothesis": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "agentic_opportunity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "practice_intelligence_angle": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "human_boundary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "why_now": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "disqualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+
+    "outreach": {
+      "type": "object",
+      "description": "Recommended communication and current outreach state. Execution remains the responsibility of Orchestrator.",
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "recommended_contact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "channel": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "email",
+            "linkedin",
+            "phone",
+            "website_contact",
+            "unknown"
+          ]
+        },
+        "reason_for_contact": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "personalisation_points": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "research_complete",
+            "draft",
+            "pending_approval",
+            "approved",
+            "sent",
+            "rejected",
+            "do_not_contact"
+          ]
+        },
+        "sent_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    }
+  }
+}

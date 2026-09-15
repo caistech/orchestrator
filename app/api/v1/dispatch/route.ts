@@ -20,6 +20,14 @@ import { serviceClient } from '@/lib/supabase';
 import { CONTRACT_VERSION, type DispatchRequest } from '@/src/contract';
 import { authoriseCaller } from '@/src/caller-auth';
 import { flushMeter } from '@caistech/usage-meter';
+import {
+  MAX_CLARIFY_ROUNDS,
+  buildClarifyPrompt,
+  clarifyCancelMessage,
+  evaluateClarifyGate,
+  type ClarifySessionRow,
+  type ClarifyOutcome,
+} from '@/src/clarify';
 
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
@@ -54,6 +62,31 @@ async function lookupRecipient(
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/** The ask-again response: the question, and the enforcement numbers that bound it. */
+function clarifyResponse(
+  body: DispatchRequest,
+  taskGroupId: string,
+  count: number,
+  missing: string[],
+  ttlAt: string,
+  prompt: string,
+) {
+  return NextResponse.json({
+    version: CONTRACT_VERSION,
+    taskGroupId,
+    status: 'clarifying',
+    intentId: body.intentId,
+    message: prompt,
+    clarifying: {
+      required: missing,
+      prompt,
+      count,
+      max: MAX_CLARIFY_ROUNDS,
+      ttlAt,
+    },
+  });
+}
 
 export async function POST(request: Request) {
   let body: DispatchRequest;
@@ -112,6 +145,131 @@ export async function POST(request: Request) {
   if (tenantError) {
     console.error('[dispatch] could not ensure tenant:', tenantError);
     return NextResponse.json({ error: 'Could not accept the task' }, { status: 500 });
+  }
+
+  // T1 — THE CLARIFY GATE (DESIGN §5.1, /plan-eng-review D4).
+  //
+  // The loop is CALLER-INITIATED and ORCHESTRATOR-ENFORCED. Nothing here auto-enters an ordinary
+  // dispatch: evaluateClarifyGate returns `proceed` for a request with no `clarification` block, so
+  // the owner's speak→draft flow is untouched. When a caller DOES open a loop, the row holds the
+  // count and the TTL, and both are enforced here at every interaction — the boundary is structural
+  // and survives an adapter swap. An unanswered clarification dies (count OR TTL, whichever bites
+  // first) with a journaled reason, surfaced the next time anyone looks at the task.
+  let clarifySession: ClarifySessionRow | null = null;
+  let clarifyOutcome: ClarifyOutcome = { mode: 'proceed' };
+  if (body.clarification) {
+    const { data: sessionRow } = await supabase
+      .from('tasks')
+      .select('id, status, clarify_count, clarify_ttl_at, clarify_missing, clarify_answers')
+      .eq('tenant_id', tenantId)
+      .eq('intent_id', body.intentId)
+      .maybeSingle();
+    const existing = sessionRow
+      ? (sessionRow as ClarifySessionRow)
+      : null;
+    clarifySession = existing;
+    clarifyOutcome = evaluateClarifyGate(body, existing, new Date());
+  }
+
+  if (clarifyOutcome.mode === 'ask') {
+    const ask = clarifyOutcome;
+    const answers = body.clarification?.answers ?? {};
+    const nowIso = new Date().toISOString();
+
+    if (!clarifySession) {
+      // First leg of a loop: the ask becomes a held task row BEFORE any draft exists.
+      const { data: created, error: createError } = await supabase
+        .from('tasks')
+        .insert({
+          tenant_id: tenantId,
+          intent_id: body.intentId,
+          ingress: body.ingress,
+          flow: body.flow ?? null,
+          status: 'clarifying',
+          summary: body.utterance ?? 'Under-specified request — clarify loop open.',
+          payload: { ...(body.payload ?? {}), kind: 'clarifying', clarifyStart: nowIso },
+          clarify_count: ask.count,
+          clarify_ttl_at: ask.ttlAt,
+          clarify_missing: ask.missing,
+          clarify_answers: answers,
+        })
+        .select('id')
+        .single();
+      if (createError) {
+        if ((createError as { code?: string }).code === '23505') {
+          // A concurrent opener won the race; fold into the existing loop rather than erroring.
+          const { data: raced } = await supabase
+            .from('tasks')
+            .select('id, status, clarify_count, clarify_ttl_at, clarify_missing, clarify_answers')
+            .eq('tenant_id', tenantId)
+            .eq('intent_id', body.intentId)
+            .maybeSingle();
+          if (raced) {
+            clarifySession = raced as ClarifySessionRow;
+            return clarifyResponse(body, raced.id, clarifySession.clarify_count ?? ask.count,
+              (clarifySession.clarify_missing as string[]) ?? ask.missing,
+              clarifySession.clarify_ttl_at ?? ask.ttlAt, buildClarifyPrompt(ask.missing));
+          }
+        }
+        console.error('[dispatch] clarify-open insert failed:', createError);
+        return NextResponse.json({ error: 'Could not accept the task' }, { status: 500 });
+      }
+      await supabase.from('task_events').insert({
+        task_id: created.id,
+        event: 'clarifying',
+        detail: { round: ask.count, missing: ask.missing, reason: body.clarification?.reason ?? null },
+        correlation_id: body.correlationId ?? null,
+      });
+      return clarifyResponse(body, created.id, ask.count, ask.missing, ask.ttlAt, buildClarifyPrompt(ask.missing));
+    }
+
+    // A live loop re-asks: advance the round, keep the journal answers cumulative.
+    await supabase
+      .from('tasks')
+      .update({
+        clarify_count: ask.count,
+        clarify_missing: ask.missing,
+        clarify_answers: { ...(clarifySession.clarify_answers ?? {}), ...answers },
+        updated_at: nowIso,
+      })
+      .eq('id', clarifySession.id);
+    await supabase.from('task_events').insert({
+      task_id: clarifySession.id,
+      event: 'clarifying',
+      detail: { round: ask.count, missing: ask.missing, reason: body.clarification?.reason ?? null },
+      correlation_id: body.correlationId ?? null,
+    });
+    return clarifyResponse(body, clarifySession.id, ask.count, ask.missing, ask.ttlAt, buildClarifyPrompt(ask.missing));
+  }
+
+  if (clarifyOutcome.mode === 'cancelled') {
+    // The loop died: TTL or rounds exhausted. Killed with a journaled reason, and the response says
+    // it out loud so the caller re-dispatches with the details instead of pointing its owner at a
+    // task that looks live forever.
+    const nowIso = new Date().toISOString();
+    if (clarifySession) {
+      await supabase
+        .from('tasks')
+        .update({
+          status: 'failed',
+          result: { error: clarifyOutcome.reason, detail: clarifyOutcome.detail },
+          updated_at: nowIso,
+        })
+        .eq('id', clarifySession.id);
+      await supabase.from('task_events').insert({
+        task_id: clarifySession.id,
+        event: 'cancelled',
+        detail: { reason: clarifyOutcome.reason, detail: clarifyOutcome.detail },
+        correlation_id: body.correlationId ?? null,
+      });
+    }
+    return NextResponse.json({
+      version: CONTRACT_VERSION,
+      taskGroupId: clarifySession?.id ?? body.intentId,
+      status: 'failed',
+      intentId: body.intentId,
+      message: clarifyCancelMessage(clarifyOutcome.reason),
+    });
   }
 
   // A SPOKEN intent gets classified and drafted here, then HELD. Without this the owner said
@@ -241,14 +399,12 @@ export async function POST(request: Request) {
   const draftFailed =
     body.ingress === 'SAY' && (OWNED_KINDS as string[]).includes(kind) && !drafted;
 
-  const { data, error } = await supabase
-    .from('tasks')
-    .insert({
-      tenant_id: tenantId,
-      intent_id: body.intentId,
-      ingress: body.ingress,
-      flow: body.flow ?? null,
-      tier: body.ingress === 'SAY' ? 'C' : null,
+  const rowToSave: Record<string, unknown> = {
+    tenant_id: tenantId,
+    intent_id: body.intentId,
+    ingress: body.ingress,
+    flow: body.flow ?? null,
+    tier: body.ingress === 'SAY' ? 'C' : null,
       // Held for the owner when we have something to show them; 'unsupported' when nothing here can
       // do it — CAPTURED, never silently dropped, because that row is the agent-builder's backlog.
       status: holding
@@ -301,9 +457,20 @@ export async function POST(request: Request) {
       ...(draftFailed
         ? { result: { error: 'draft_failed', detail: 'The drafter returned nothing for a recognised request.' } }
         : {}),
-    })
-    .select('id, status')
-    .single();
+      // The T1 round trip (DESIGN §5.1): a dispatch that CLOSED a clarify loop finalises its own
+      // row — the session that has been holding the count and TTL — rather than minting a second
+      // one. The answers carried out of the loop are journaled on the row for any later reviewer.
+      ...(body.clarification?.answers ? { clarify_answers: body.clarification.answers } : {}),
+    };
+
+    const save = clarifySession
+      ? supabase.from('tasks').update(rowToSave).eq('id', clarifySession.id)
+      : supabase.from('tasks').insert(rowToSave);
+    // The cast keeps supabase's discriminated union (data XOR error) so the downstream `data.id`
+    // use narrows exactly as it did when this was a single INSERT call.
+    const { data, error } = (await save.select('id, status').single()) as
+      | { data: { id: string; status: string }; error: null }
+      | { data: null; error: { code?: string; message?: string } };
 
   // The idempotency key doing its job: the same trigger delivered twice is one task. Return the
   // EXISTING task rather than an error — a caller retrying a timeout must not be told it failed.
@@ -332,6 +499,20 @@ export async function POST(request: Request) {
     detail: { ingress: body.ingress, via: 'v1/dispatch', kind },
     correlation_id: body.correlationId ?? null,
   });
+
+  // The loop closed on this dispatch — record the round that made it runnable, next to the journal
+  // the ask rounds already wrote. Reviewers see the whole arc, not the last state.
+  if (clarifySession) {
+    await supabase.from('task_events').insert({
+      task_id: data.id,
+      event: 'clarified',
+      detail: {
+        loopRounds: clarifySession.clarify_count ?? null,
+        answers: body.clarification?.answers ?? null,
+      },
+      correlation_id: body.correlationId ?? null,
+    });
+  }
 
   if (drafted) {
     await supabase.from('drafts').insert({
@@ -367,6 +548,7 @@ export async function POST(request: Request) {
     version: CONTRACT_VERSION,
     taskGroupId: data.id,
     status: data.status,
+    intentId: body.intentId,
     draft: drafted
       ? { kind, summary: drafted.summary, preview: drafted.preview, artifact: { ...classified } }
       : undefined,

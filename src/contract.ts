@@ -30,7 +30,26 @@ export type TaskState =
   | 'running'
   | 'done'
   | 'failed'
-  | 'unsupported';        // nothing can route it — captured, never silently dropped
+  | 'unsupported'         // nothing can route it — captured, never silently dropped
+  | 'clarifying';         // held at the pre-gate: the request is under-specified and the CALLER is
+                          // asking the owner for the outstanding fields (T1 / DESIGN §5.1).
+
+/** The four things a dispatch must carry before it is runnable. Caller asks, gate enforces. */
+export type ClarifyField = 'objective' | 'responsibleTier' | 'successCriteria' | 'dueAt';
+
+/**
+ * The clarify round-trip (T1). Two distinct messages share this shape, exactly like ApproveRequest
+ * carries a decision and an optional patch in one object:
+ *   - REQUEST: `required` lists the fields the caller still needs — opens/deepens the loop.
+ *   - ANSWER:  `answers` supplies the caller-held answers — advances or closes the loop.
+ */
+export interface DispatchClarification {
+  required?: ClarifyField[];
+  /** Verbatim answers from the owner, keyed by field name. */
+  answers?: Partial<Record<ClarifyField, string>>;
+  /** Why the caller asked — journaled on the task so a reviewer later knows the un-said reason. */
+  reason?: string;
+}
 
 /** POST /v1/dispatch */
 export interface DispatchRequest {
@@ -45,6 +64,11 @@ export interface DispatchRequest {
   payload?: Record<string, unknown>;
   /** Context the caller already holds, so the orchestrator does not re-derive it. */
   context?: Record<string, unknown>;
+  /**
+   * The clarify round-trip (T1). Present ONLY when the caller is asking a question or answering one.
+   * An ordinary dispatch omits it entirely and the gate leaves it untouched.
+   */
+  clarification?: DispatchClarification;
   correlationId?: string;                 // traces one trigger across every hop
 }
 
@@ -65,6 +89,23 @@ export interface DispatchResponse {
   message?: string;
   /** True when the send cannot complete until the human supplies a recipient. */
   needsRecipient?: boolean;
+  /**
+   * The CALLER'S OWN idempotency key, echoed. The answering round of a clarify loop must re-dispatch
+   * the SAME intent (T1) — taskGroupId is the orchestrator's id and the caller has no way to derive
+   * the key it coined itself, so the only safe echo is its own intentId.
+   */
+  intentId?: string;
+  /** Present when status is 'clarifying': the question being asked, and its enforcement numbers. */
+  clarifying?: {
+    required: ClarifyField[];
+    /** The question, phrased for a voice agent to read out ("Before I run with this I need…"). */
+    prompt: string;
+    /** Rounds already spent. The gate cancels once this passes `max`. */
+    count: number;
+    max: number;
+    /** ISO — the request auto-cancels at this instant (TTL; DESIGN §5.1, D4). */
+    ttlAt: string;
+  };
 }
 
 /** POST /v1/tasks/:id/approve */
@@ -85,6 +126,14 @@ export interface TaskStatusResponse {
   status: TaskState;
   draft?: TaskDraft;
   message?: string;
+  /** Present when status is 'clarifying' — the poll leg mirrors the ask from DispatchResponse. */
+  clarifying?: {
+    required: ClarifyField[];
+    prompt: string;
+    count: number;
+    max: number;
+    ttlAt: string;
+  };
 }
 
 /** One row of the list leg. Enough to RECONSTRUCT a caller's missing mirror row, and no more. */

@@ -21,6 +21,7 @@
     "db:seed": "tsx scripts/db-migrate.ts --seed"
   },
   "dependencies": {
+    "@caistech/kira-testing-client": "file:../cais-shared-services/packages/kira-testing-client",
     "@caistech/abn-lookup": "^0.1.1",
     "@caistech/email-compliance": "^0.4.0",
     "@caistech/email-send": "^0.2.0",

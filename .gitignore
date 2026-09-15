@@ -11,6 +11,10 @@ next-env.d.ts
 
 .vercel
 .env*
+# The one exception, and it must stay one: the documented, value-free template. `.env*` is otherwise
+# deliberately broad — it is what stops a real `.env.local` being committed — so this negation is
+# narrow and explicit rather than a relaxed pattern. Placeholders only in that file, ever.
+!.env.example
 
 # Incremental TypeScript build cache — a machine-local artifact that churns on every
 # typecheck. Tracked by accident; it is not source and its diffs are noise.

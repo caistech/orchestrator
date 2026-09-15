@@ -354,6 +354,15 @@ Original numbering preserved. `+` marks flows added in this pass.
 
 > **+132 is the flow that keeps §8 honest.** The canonical-entity argument in the spec says a CRM's real value is one deduped contact record with a stable ID. That property doesn't maintain itself — it needs a sweeper that finds near-duplicates and a gate that has a human confirm the merge. Without this flow, the canonical store degrades into exactly the mess it exists to prevent.
 
+### 4.16 STAR — specialist intelligence layer `+ new group`
+
+| # | Flow | In | Tier | Gate | Freq | Mf |
+|---|---|---|---|---|---|---|
+| +STAR-1 | `STAR_DIAGNOSTIC` — run a specialist diagnostic over the business | STA | **A** | B | md | 0 |
+| +STAR-2 | `STAR_ROADMAP` — generate a prioritised improvement roadmap | STA | **A** | B | md | 0 |
+
+> **STAR is a stub, deliberately.** The integration decision (2026-09-15): Kira and STAR stay distinct — Kira holds context, memory, voice and the owner relationship; STAR supplies the specialist methodology/intelligence; the consultant sits in the middle and decides. While Brian finalises the Foundry/Azure endpoint, `src/connectors/star.ts` answers both flows with a synthetic `stub: true` result so the dispatch contract is proven end to end. Gate `B` is the conservative default for a capability that produces advisory content — nothing runs until a human approves it.
+
 ---
 
 ## 5. What the distribution says

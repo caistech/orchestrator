@@ -34,6 +34,7 @@ import { resolveRecipientByName, type RecipientResolution } from '@/src/connecto
 import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
 import { findComparableWork, comparablesAsContext, type Comparable } from '@/src/knowledge/past-pricing';
 import { findMaterialCost, materialCostAsContext, type MaterialCost } from '@/src/knowledge/material-cost';
+import { callStar, isStarFlow } from '@/src/connectors/star';
 
 /**
  * Look a spoken name up in the tenant's own contact books.
@@ -269,6 +270,63 @@ export async function POST(request: Request) {
       status: 'failed',
       intentId: body.intentId,
       message: clarifyCancelMessage(clarifyOutcome.reason),
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // STAR STUB — specialist intelligence capability, placeholder wiring.
+  //
+  // STAR (Brian Kerrigan / Excelerating) is the specialist methodology layer that sits BEHIND Kira
+  // in the agreed architecture: Kira knows the business and identifies what it needs, then calls the
+  // appropriate STAR capability through the orchestrator. The Foundry/Azure endpoint shape is still
+  // being finalised, so a dispatch bearing a STAR flow is answered here by the stub connector:
+  // the request is journaled, the task closes as done, and the caller gets a synthetic result that
+  // PROVES the round trip. When the real endpoint lands, only src/connectors/star.ts changes.
+  if (isStarFlow(body.flow)) {
+    const starResult = await callStar({
+      intent: body.flow,
+      tenantId,
+      payload: body.payload ?? {},
+    });
+
+    const createdAt = new Date().toISOString();
+    const { data: starTask, error: starError } = (await supabase
+      .from('tasks')
+      .insert({
+        tenant_id: tenantId,
+        intent_id: body.intentId,
+        ingress: body.ingress,
+        flow: body.flow,
+        status: 'done',
+        utterance: body.utterance ?? null,
+        summary: `[STAR STUB] ${body.flow} — awaiting Brian/Foundry endpoint shape`,
+        payload: { ...(body.payload ?? {}), intent: body.flow, star: 'stub' },
+        result: starResult.result,
+        created_at: createdAt,
+      })
+      .select('id, status')
+      .single()) as { data: { id: string; status: string } | null; error: { code?: string; message?: string } | null };
+
+    if (starError) {
+      // The idempotency key's job: the same trigger delivered twice is one task.
+      if (starError.code === '23505') {
+        return NextResponse.json({
+          version: CONTRACT_VERSION,
+          status: 'done',
+          intentId: body.intentId,
+          message: 'Already dispatched.',
+        });
+      }
+      console.error('[dispatch] STAR stub task insert failed:', starError);
+      return NextResponse.json({ error: 'Could not accept the task' }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      version: CONTRACT_VERSION,
+      taskGroupId: starTask?.id ?? body.intentId,
+      status: 'done',
+      intentId: body.intentId,
+      result: starResult.result,
     });
   }
 

@@ -30,6 +30,7 @@ import {
 } from '@/src/clarify';
 
 import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
+import { agentForKind } from '@/src/agents/register';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
 import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
 import { findComparableWork, comparablesAsContext, type Comparable } from '@/src/knowledge/past-pricing';
@@ -338,6 +339,9 @@ export async function POST(request: Request) {
   let classified: Awaited<ReturnType<typeof classifyIntent>> = null;
   let drafted: Awaited<ReturnType<typeof draftForIntent>> = null;
   let kind: OwnedKind | 'unsupported' = 'unsupported';
+  // Which agent owns this kind, when any. The task row records the agent so the evidence
+  // collector and the continuity dashboard can attribute the work (AGENTIC_NETWORK.md §2).
+  let responsibleAgentId: string | null = null;
   let contactLookup: RecipientResolution | null = null;
   /** Which learned quote format shaped this draft — null when the tenant has none. Recorded on the task. */
   let quoteFormatVersion: number | null = null;
@@ -350,6 +354,12 @@ export async function POST(request: Request) {
   if (body.ingress === 'SAY' && body.utterance && apiKey) {
     classified = await classifyIntent(apiKey, body.utterance);
     kind = classified?.kind ?? 'unsupported';
+    // An owned kind routes to the sync draft-and-hold path below (fast, proven, right for a live
+    // voice call). Every owned kind also has an agent in the registry; the 'unsupported' kinds
+    // that the agent registry DOES cover get tagged here so the async worker can pick them up.
+    // `agentForKind` only ever returns an agent registered for this kind — an intent for a kind
+    // with no agent still falls through to 'unsupported', captured for the agent-builder backlog.
+    responsibleAgentId = agentForKind(kind)?.id ?? null;
 
     // The owner said a NAME, not an address — "send an RFQ to Roger at Quantum Surveys". The
     // classifier is forbidden from inventing the address, correctly, so this is where the task used
@@ -463,6 +473,8 @@ export async function POST(request: Request) {
     ingress: body.ingress,
     flow: body.flow ?? null,
     tier: body.ingress === 'SAY' ? 'C' : null,
+    // Which specialist does this work — attribution for evidence + continuity (AGENTIC_NETWORK §2).
+    agent_id: responsibleAgentId,
       // Held for the owner when we have something to show them; 'unsupported' when nothing here can
       // do it — CAPTURED, never silently dropped, because that row is the agent-builder's backlog.
       status: holding

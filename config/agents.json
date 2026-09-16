@@ -1,0 +1,58 @@
+{
+  "$comment": [
+    "THE AGENT REGISTRY — declarative agent definitions, as data.",
+    "",
+    "Mirrors config/tools.json: config lives here, code binding lives in src/agents/register.ts.",
+    "Each agent declares its function, read-only tools, model, iteration/cost caps, and which",
+    "registry flows it unlocks. The runner (src/agents/runner.ts) reads this at runtime.",
+    "",
+    "Agents may only use tools with class 'read' from config/tools.json. Agents NEVER hold",
+    "effect tools — they emit effects through the outbox, and the drain executes them.",
+    "This is the read/effect split enforced structurally, not by convention.",
+    "",
+    "`npm run check:agents` asserts registry↔runner parity, just as check:tools does."
+  ],
+  "version": 1,
+  "agents": [
+    {
+      "id": "quoting_agent",
+      "function": "Drafts complex quotes using historical pricing, material costs, and the business's own quote format.",
+      "tools": ["past_pricing.read", "material_cost.read", "quote_format.read"],
+      "model": "gpt-4.1-mini",
+      "maxIterations": 1,
+      "maxCost": 0.05,
+      "flowsUnlocked": ["16", "20", "33"],
+      "notes": "Async loop: gather context from read tools, draft via LLM, emit email.draft or email.send. Approval gate applies via delegation_policy."
+    },
+    {
+      "id": "email_agent",
+      "function": "Drafts emails to a named person (follow-ups, replies, intros) using contact resolution.",
+      "tools": ["past_pricing.read"],
+      "model": "gpt-4.1-mini",
+      "maxIterations": 1,
+      "maxCost": 0.03,
+      "flowsUnlocked": ["9", "19", "45"],
+      "notes": "Recipient resolution happens in the dispatch route before this agent runs. Emits email.draft or email.send effect."
+    },
+    {
+      "id": "reminder_agent",
+      "function": "Sets personal reminders for the owner, scheduled for delivery at the requested time.",
+      "tools": [],
+      "model": "gpt-4.1-mini",
+      "maxIterations": 1,
+      "maxCost": 0.01,
+      "flowsUnlocked": ["23"],
+      "notes": "Simplest agent: no read tools needed, just schedules the reminder as an email.send effect at the due_at time."
+    },
+    {
+      "id": "compliance_sweeper",
+      "function": "Sweeps canonical business data for regulatory or contractual breaches (insurance expiry, licence renewal, certification gaps).",
+      "tools": ["past_pricing.read"],
+      "model": "gpt-4.1-mini",
+      "maxIterations": 2,
+      "maxCost": 0.08,
+      "flowsUnlocked": ["26", "83", "123", "127", "130"],
+      "notes": "Tier M (mechanical). The 7 existing sweep rules in src/rules.ts already cover this; this agent wraps them and feeds evidence to the evidence collector on completion."
+    }
+  ]
+}

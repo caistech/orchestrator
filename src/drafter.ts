@@ -15,12 +15,25 @@
 // than a slow one.
 
 export type OwnedKind = 'quote' | 'email' | 'reminder';
+/**
+ * Kinds the dispatcher routes ASYNC to the agent worker. These are registered in the registry
+ * (config/agents.json) but have no sync draft-and-hold path — the classifier surfaces them so
+ * they reach a queued task with agent_id set, which is the worker's input contract. `compliance`
+ * is the first; a future async-builder kind also routes here.
+ *
+ * Kept separate from OWNED_KINDS on purpose: owned kinds get a DRAFT the owner can approve in
+ * one conversation turn; async kinds get an agent loop the worker runs in the background. The
+ * two are different promises, and conflating them is how a spoke intent ends up drafted-and-held
+ * by a system with nothing to hold it.
+ */
+export type AsyncKind = 'compliance';
 import { observeAiCall } from '@caistech/usage-meter';
 
 export const OWNED_KINDS: OwnedKind[] = ['quote', 'email', 'reminder'];
+export const ASYNC_KINDS: AsyncKind[] = ['compliance'];
 
 export interface Classified {
-  kind: OwnedKind | 'unsupported';
+  kind: OwnedKind | AsyncKind | 'unsupported';
   recipient_name: string | null;
   recipient_email: string | null;
   subject: string | null;
@@ -40,6 +53,7 @@ You triage an owner-operator's spoken request into ONE task their assistant can 
 - "quote": prepare a price quote for a client.
 - "email": draft a message to a named person (a follow-up, a reply, an intro).
 - "reminder": set a reminder / follow-up for the owner themselves.
+- "compliance": check the business's records against a regulatory or contractual obligation.
 - "unsupported": anything else (booking, invoicing to an external system, ordering materials, etc.).
 Extract any recipient, subject and timing the owner stated. Use null for anything not stated; never invent an email address.
 Reply with ONLY a JSON object: {"kind":..., "recipient_name":..., "recipient_email":..., "subject":..., "due_hint":..., "reason_if_unsupported":...}
@@ -249,15 +263,29 @@ export function deliveryFromUtterance(utterance: string): 'draft' | 'send' {
   return wantsDrafts ? 'draft' : 'send';
 }
 
+/**
+ * Reduce a classifier's raw kind string to the closed vocabulary the dispatch route understands.
+ *
+ * The classifier is told to reply within the prompt's vocabulary, but the model is not software —
+ * a restatement of a known kind, or a name nobody registered, must not route work somewhere the
+ * route cannot execute it. Owned kinds draft-and-hold; async kinds go to the agent worker; anything
+ * else is captured for the agent-builder backlog. 'unsupported' is the floor, never an error.
+ */
+export function coerceKind(rawKind: unknown): OwnedKind | AsyncKind | 'unsupported' {
+  const kind = String(rawKind ?? 'unsupported');
+  if ((OWNED_KINDS as string[]).includes(kind)) return kind as OwnedKind;
+  if ((ASYNC_KINDS as string[]).includes(kind)) return kind as AsyncKind;
+  return 'unsupported';
+}
+
 export async function classifyIntent(apiKey: string, utterance: string): Promise<Classified | null> {
   // Named separately from the draft call. They share a function and a model and are different
   // questions with different prompts and different failure meanings, and a single 'chat' bucket
   // would average them into a number that describes neither.
   const raw = await askModel(apiKey, CLASSIFY_SYSTEM, utterance, 'classify_intent');
   if (!raw) return null;
-  const kind = String(raw.kind ?? 'unsupported');
   return {
-    kind: (OWNED_KINDS as string[]).includes(kind) ? (kind as OwnedKind) : 'unsupported',
+    kind: coerceKind(raw.kind),
     recipient_name: (raw.recipient_name as string) ?? null,
     recipient_email: usableRecipient(raw.recipient_email),
     subject: (raw.subject as string) ?? null,

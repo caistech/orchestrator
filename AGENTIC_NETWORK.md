@@ -1,6 +1,6 @@
 # AGENTIC_NETWORK.md — the doing-layer design (v1)
 
-Status: APPROVED-by-plan-eng-review (2026-09-16) · supersedes no existing doc; builds the
+Status: **Built** (2026-09-16) · supersedes no existing doc; builds the
 EXECUTION_LAYER §4 tier-3 (agentic) handoff into a runnable design.
 Prime directive: make the business run without the owner, evidenced, not claimed.
 
@@ -15,13 +15,14 @@ Prime directive: make the business run without the owner, evidenced, not claimed
    bucket moves only on evidenced pathway milestones.
 
 ## 2. Components
-- Agent Registry (`config/agents.json`) — agents named by function; declares model + tools.
-- Runner (`src/agents/runner.ts`) — executes the loop; read tools only; emits effects.
-- Router (enhanced `dispatch/route.ts`) — classify → registry lookup → sync draft or async loop.
-- Trust Ratchet (`src/agents/ratchet.ts`) — outcome-evidence promotions, reversible, capped.
-- Evidence Collector (`src/genome/evidence-collector.ts`) — effect→bucket mapping, staging first.
-- Continuity Dashboard (`app/continuity/`) — quality-adjusted owner-independence metrics + alerts.
-- `check:agents` — asserts registry↔runner parity. An un-runnable agent is a bug, not config.
+- Agent Registry (`config/agents.json`) — agents named by function; declares model + tools. **Built.**
+- Runner (`src/agents/runner.ts`) — executes the loop; read tools only; emits effects. **Built.**
+- Router (enhanced `dispatch/route.ts`) — classify → registry lookup → sync draft or async loop. **Built.**
+- Trust Ratchet (`src/agents/ratchet.ts`) — outcome-evidence promotions, reversible, capped. **Built.**
+- Evidence Collector (`src/genome/evidence-collector.ts`) — effect→bucket mapping, staging first. **Built.**
+- Worker (`src/agents/worker.ts`) — background executor, shared by cron route and CLI. Existing-effect guard prevents double-send. **Built.**
+- Continuity Dashboard (`app/continuity/`) — quality-adjusted owner-independence metrics + alerts. **Built.**
+- `check:agents` — asserts registry↔runner parity. An un-runnable agent is a bug, not config. **Built.**
 
 ## 3. The agent loop (tier 3, async)
 dispatch → classify → [registry] → (sync: draft+clarify) | (async: run loop)

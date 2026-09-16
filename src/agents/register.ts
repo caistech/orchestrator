@@ -131,6 +131,30 @@ export function agentForKind(kind: string): AgentEntry | null {
   return agentFor(agentId);
 }
 
+/**
+ * Find the agent that unlocks a registry flow id. Flows are declared per agent in config as
+ * `flowsUnlocked`; the sweeper emits tasks carrying a flow id, and attribution to an agent is
+ * exactly what the evidence collector needs to map mechanical sweep work into genome buckets.
+ *
+ * A sweep flow with no unlocking agent is still swept — the sweep is the mechanism, the agent is
+ * the attribution — so this returns null rather than inventing an owner.
+ */
+export function agentForFlow(flow: string): AgentEntry | null {
+  return AGENTS.find((a) => a.flowsUnlocked.includes(flow)) ?? null;
+}
+
+/**
+ * All registry flow ids across every agent. Used by the sweeper to tag task attribution without
+ * importing the registry per-rule — a flow id that unlocks no agent stays null (still swept).
+ */
+export function allRegisteredFlows(): string[] {
+  const flows = new Set<string>();
+  for (const a of AGENTS) {
+    for (const f of a.flowsUnlocked) flows.add(f);
+  }
+  return [...flows];
+}
+
 /** All tool kinds referenced by any agent. Used by check:agents to verify they exist in tools.json. */
 export function allAgentToolRefs(): string[] {
   const refs = new Set<string>();

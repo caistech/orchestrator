@@ -21,12 +21,13 @@ const AGENT: AgentEntry = {
   flowsUnlocked: [],
 };
 
-function makeSupabase(tasks: unknown[]) {
+function makeSupabase(tasks: unknown[], effects: unknown[] = []) {
   const eq = vi.fn().mockResolvedValue({ error: null, data: null });
   const update = vi.fn((_values: unknown) => ({ eq }));
   const insert = vi.fn().mockResolvedValue({ error: null, data: [{ id: 'ef-1' }] });
   const upsert = vi.fn().mockResolvedValue({ error: null, data: null });
   const maybeSingle = vi.fn().mockResolvedValue({ data: null, error: null });
+  const effectsEq = vi.fn().mockResolvedValue({ error: null, data: effects });
 
   const from = vi.fn((table: string) => {
     if (table === 'tasks') {
@@ -49,6 +50,9 @@ function makeSupabase(tasks: unknown[]) {
     }
     if (table === 'evidence_staging') return { upsert };
     if (table === 'delegation_policy') return { select: vi.fn().mockReturnValue({ eq: maybeSingle }), upsert };
+    if (table === 'effects') {
+      return { select: vi.fn().mockReturnValue({ eq: effectsEq }), insert, update, upsert };
+    }
     return { select: vi.fn().mockResolvedValue({ data: [], error: null }), insert, update, upsert };
   });
 
@@ -113,6 +117,40 @@ describe('runAgentWorker', () => {
       expect(report.runs[0].status).toBe('completed');
     } finally {
       globalThis.fetch = realFetch;
+    }
+  });
+
+  it('does NOT re-run a task whose effect the sweeper already emitted', async () => {
+    // A tier-M sweep task carries agent_id for ATTRIBUTION (so evidence maps to the owning agent),
+    // but its effect already went out at sweep time. The worker must journal `existing_effect` and
+    // stage evidence from the EXISTING effect, never emit a second one through the loop. The old
+    // runner re-emitting here would SEND a second email — the exact failure this guard exists for.
+    const supabase = makeSupabase(
+      [
+        { id: 't1', tenant_id: 'tenant-1', utterance: 'compliance', payload: {}, agent_id: 'compliance_sweeper', status: 'queued' },
+      ],
+      [
+        {
+          id: 'ef-1',
+          task_id: 't1',
+          kind: 'email.send',
+          request: { to: 'x@example.com', subject: 'Your insurance expires soon', body: 'renew', commercial: true },
+        },
+      ],
+    );
+
+    const realFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [], usage: {} }) });
+    const prevFetch = globalThis.fetch;
+    globalThis.fetch = realFetch as unknown as typeof fetch;
+
+    try {
+      const report = await runAgentWorker({ supabase, apiKey: 'sk-test', apply: true });
+      expect(report.runs[0].status).toBe('existing_effect');
+      expect(report.runs[0].effectKind).toBe('email.send');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+      expect(supabase._upsert).toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = prevFetch;
     }
   });
 });

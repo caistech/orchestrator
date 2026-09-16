@@ -29,7 +29,7 @@ import {
   type ClarifyOutcome,
 } from '@/src/clarify';
 
-import { classifyIntent, draftForIntent, OWNED_KINDS, type OwnedKind } from '@/src/drafter';
+import { classifyIntent, draftForIntent, OWNED_KINDS, ASYNC_KINDS, type OwnedKind, type AsyncKind } from '@/src/drafter';
 import { agentForKind } from '@/src/agents/register';
 import { resolveRecipientByName, type RecipientResolution } from '@/src/connectors/google-contacts';
 import { currentQuoteFormat, formatAsInstructions } from '@/src/knowledge/quote-format';
@@ -338,7 +338,7 @@ export async function POST(request: Request) {
   // more connected.
   let classified: Awaited<ReturnType<typeof classifyIntent>> = null;
   let drafted: Awaited<ReturnType<typeof draftForIntent>> = null;
-  let kind: OwnedKind | 'unsupported' = 'unsupported';
+  let kind: OwnedKind | AsyncKind | 'unsupported' = 'unsupported';
   // Which agent owns this kind, when any. The task row records the agent so the evidence
   // collector and the continuity dashboard can attribute the work (AGENTIC_NETWORK.md §2).
   let responsibleAgentId: string | null = null;
@@ -355,10 +355,11 @@ export async function POST(request: Request) {
     classified = await classifyIntent(apiKey, body.utterance);
     kind = classified?.kind ?? 'unsupported';
     // An owned kind routes to the sync draft-and-hold path below (fast, proven, right for a live
-    // voice call). Every owned kind also has an agent in the registry; the 'unsupported' kinds
-    // that the agent registry DOES cover get tagged here so the async worker can pick them up.
-    // `agentForKind` only ever returns an agent registered for this kind — an intent for a kind
-    // with no agent still falls through to 'unsupported', captured for the agent-builder backlog.
+    // voice call). An ASYNC kind routes to the agent worker instead: the classifier surfaces it
+    // (drafter.ts `ASYNC_KINDS`), `agentForKind` tags the owning agent, and the status logic below
+    // falls through to 'queued' — the worker's input contract. `agentForKind` only ever returns an
+    // agent registered for this kind — an intent for a kind with no agent falls through to
+    // 'unsupported', captured for the agent-builder backlog.
     responsibleAgentId = agentForKind(kind)?.id ?? null;
 
     // The owner said a NAME, not an address — "send an RFQ to Roger at Quantum Surveys". The

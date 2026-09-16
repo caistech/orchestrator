@@ -92,6 +92,38 @@ export async function runAgentWorker(opts: AgentWorkerOptions): Promise<AgentWor
       continue;
     }
 
+    // An effect ALREADY exists for this task — it is mechanical work the sweeper emitted directly
+    // (tier-M flow tasks, AGENTIC_NETWORK §4), not a plan the loop owes. Agent-attributed sweeps
+    // carry agent_id for EVIDENCE attribution, but running the loop on them would emit a SECOND
+    // effect for work that already happened. Skip the loop; stage evidence from the existing
+    // effect and open the outcome window, which is the whole point of the mechanical tag.
+    const { data: existingEffects, error: existingError } = await supabase
+      .from('effects')
+      .select('id, kind, request, status')
+      .eq('task_id', task.id);
+    if (existingError) {
+      throw new Error(`could not read effects for task ${task.id}: ${existingError.message}`);
+    }
+    if (existingEffects && existingEffects.length > 0) {
+      report.runs.push({ taskId: task.id, agentId: agent.id, status: 'existing_effect', iterations: 0, totalCost: 0, effectKind: existingEffects[0].kind });
+      if (apply) {
+        const staging = collectEvidence(
+          { id: existingEffects[0].id, task_id: task.id, kind: existingEffects[0].kind, request: existingEffects[0].request },
+          { tenant_id: task.tenant_id, payload: task.payload },
+        );
+        if (staging.length > 0) {
+          const { inserted, errors: stageErrors } = await persistStaging(supabase, staging);
+          report.stagedEvidence += inserted;
+          report.evidenceErrors += stageErrors;
+        }
+        await supabase.from('tasks').update({
+          ratchet_band: 'approve_before_send',
+          ratchet_outcome_at: new Date(Date.now() + OUTCOME_WINDOW_MS).toISOString(),
+        }).eq('id', task.id);
+      }
+      continue;
+    }
+
     if (!apply) {
       report.runs.push({ taskId: task.id, agentId: agent.id, status: 'would_run', iterations: 0, totalCost: 0 });
       continue;

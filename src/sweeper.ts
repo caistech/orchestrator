@@ -17,6 +17,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { RULES, type SweepEntity, type SweepRule, type Threshold } from './rules';
 import { resolveBand, type DelegationPolicy, type GateDecision } from './gate';
 import { DevSourceConfirmer, confirmerFor, type SourceConfirmer } from './confirm';
+import { agentForFlow } from './agents/register';
 
 export interface SweepOutcome {
   flow: string;
@@ -190,12 +191,21 @@ export async function sweep(opts: SweepOptions): Promise<SweepReport> {
 
       // ── EMIT ────────────────────────────────────────────────────────────────────────────────
       const intentId = intentIdFor(rule, row, today);
+      // Attribution for the evidence collector: a mechanical sweep of an agent-unlocked flow is
+      // tagged to the owning agent so its completed effects map into genome buckets — without the
+      // tag the sweep work would be anonymous and the ratchet could never credit it. Flows with no
+      // unlocking agent (most of the seven) stay null and are still swept exactly as before.
+      const agent = agentForFlow(rule.flow);
       const { data: task, error: taskErr } = await supabase
         .from('tasks')
         .insert({
           tenant_id: tenantId,
           intent_id: intentId,
           flow: rule.flow,
+          // A sweep is a mechanical execution path (tier M). Tagging the owning agent here is
+          // attribution ONLY — the worker must not re-run the loop over a task whose effect the
+          // sweeper already emitted (double-send risk); the worker's existing-effect guard skips it.
+          agent_id: agent?.id ?? null,
           ingress: 'STA',
           tier: 'M',
           status: decision.holds ? 'awaiting_approval' : 'queued',

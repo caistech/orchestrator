@@ -91,7 +91,7 @@ Everything else — the API surface, the operator UI, the connectors — serves 
 
 This is the section to read if you want the honest inventory. Status words mean exactly what they
 say: **Live** = proven against a real business; **Built** = written and exercised, not yet proven on
-real data; **Designed** = specified in `EXECUTION_LAYER.md`, no code; **Absent** = neither.
+real data; **Designed** = specified in `AGENTIC_NETWORK.md`, no code; **Absent** = neither.
 
 ### 4.1 Connections (a tenant's authorisation to read their own systems)
 

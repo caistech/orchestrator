@@ -33,12 +33,18 @@ exercised) · **Proposed** (designed here, no code).
 | `src/connectors/xero-read.ts` | 206 | Generic resource read (`readXero`, `XERO_RESOURCES`). | Consumed by `/v1/read`; borrows `accessTokenFor` from `xero.ts`. Distinct from the confirmer above — this is the caller-facing read, that is the pre-emit check. |
 | `src/connectors/google.ts` | 437 | Drive OAuth + read + write. | Three traps documented in-file: refresh token returned once; scopes can be unticked; native Docs need export, not download. |
 | `src/connectors/google-contacts.ts` | 290 | Contact lookup. | Requested with Drive to avoid a second consent trip. |
+| `src/agents/register.ts` | 165 | **The agent registry.** Loads `config/agents.json`, validates, exposes `agentForKind()`, `agentForFlow()`. | Validation throws on malformed config; an agent with no tools is a bug, not a silent default. `KIND_TO_AGENT` is explicit — no string concat mapping. |
+| `src/agents/runner.ts` | 250 | **The agent loop.** Read → plan → emit. | Read tools only; all world-changes are `effect` rows → outbox → gate → dispatcher. Hard cost + iteration caps. Idempotent effect emission (23505 guard). |
+| `src/agents/worker.ts` | 237 | **Background executor.** Pulls `queued\|running` tasks with `agent_id`, runs the loop, stages evidence. | Existing-effect guard: tasks already emitted by the sweeper are NOT re-run (double-send prevention). Dry-run mode decides but mutates nothing. |
+| `src/agents/ratchet.ts` | 120 | **Trust ratchet.** Outcome-evidence promotions, reversible, capped. | Band math: promote = +1 toward auto, demote = -1 toward reserved. Capped at band boundaries. |
+| `src/genome/evidence-collector.ts` | 180 | **Evidence staging.** Effect → bucket mapping into `evidence_staging`. | Pure computation: given an effect + mapping, produces staging rows. The Genome is never written by agents — evidence flows through staging first. |
+| `config/agents.json` | 60 | **Agent definitions.** 4 agents: quoting, email, reminder, compliance_sweeper. | Each declares: tools (read-only), model, maxIterations, maxCost, flowsUnlocked. `check:agents` asserts parity with runner. |
 
 **Routes.** `/api/v1/`: `dispatch`, `read`, `tasks`, `tasks/[id]`, `tasks/[id]/approve`,
 `tenants/[tenantId]/{connections,identity,lookup,record}`. `/api/connect/`: `google`,
-`google/callback`, `xero`, `xero/callback`. `/api/cron/`: `sweep` (hourly), `drain` (15 min).
-`/api/auth/`: `callback`, `signout`. **Pages:** `/queue`, `/tasks`, `/connections`, `/settings`,
-`/login`, `/no-access`, `/unsubscribe`.
+`google/callback`, `xero`, `xero/callback`. `/api/cron/`: `sweep` (hourly), `drain` (15 min),
+`agents` (10 min). `/api/auth/`: `callback`, `signout`. **Pages:** `/queue`, `/tasks`,
+`/connections`, `/settings`, `/login`, `/no-access`, `/unsubscribe`, `/continuity`.
 
 ---
 

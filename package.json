@@ -21,10 +21,10 @@
     "db:seed": "tsx scripts/db-migrate.ts --seed"
   },
   "dependencies": {
-    "@caistech/kira-testing-client": "file:../cais-shared-services/packages/kira-testing-client",
     "@caistech/abn-lookup": "^0.1.1",
     "@caistech/email-compliance": "^0.4.0",
     "@caistech/email-send": "^0.2.0",
+    "@caistech/kira-testing-client": "^0.1.1",
     "@caistech/usage-meter": "^0.3.0",
     "@supabase/ssr": "^0.12.3",
     "@supabase/supabase-js": "^2.45.0",

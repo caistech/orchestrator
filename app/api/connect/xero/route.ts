@@ -63,6 +63,13 @@ export const dynamic = 'force-dynamic';
 // ⚠️ WIDENING THIS LIST DOES NOTHING FOR AN EXISTING CONNECTION. Scopes are fixed at consent, so a
 // business that has already connected must go through it again to gain them — the refresh token
 // carries what it was granted, not what we now ask for.
+//
+// `accounting.banktransactions.read` added for the reconciliation_agent (BANK_RECONCILIATION_SKILL_
+// SCOPE.md): GET /BankTransactions — both the unreconciled read and the coding-history read in
+// src/connectors/xero.ts — needs this exact granular scope (confirmed against Xero's own scopes
+// doc, "New granular scopes" table: accounting.banktransactions.read → BankTransactions,
+// BankTransfers). Chart-of-accounts needs no new scope — Accounts is already covered by
+// accounting.settings.read above.
 const SCOPES =
   process.env.XERO_SCOPES ??
   [
@@ -72,6 +79,7 @@ const SCOPES =
     'accounting.invoices.read',
     'accounting.contacts.read',
     'accounting.settings.read',
+    'accounting.banktransactions.read',
     'accounting.reports.profitandloss.read',
     'accounting.reports.banksummary.read',
     'offline_access',

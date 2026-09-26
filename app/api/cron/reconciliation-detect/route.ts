@@ -1,6 +1,9 @@
-// Daily (or weekly — see docs/BANK_RECONCILIATION_SKILL_SCOPE.md §"activation"): detect unreconciled
-// Xero bank transactions and queue them for the reconciliation_agent, in batches. The STA ingress —
-// nothing happened, and that IS the trigger, same shape as cron/sweep.
+// Daily: detect unreconciled Xero bank transactions and queue them for the reconciliation_agent, in
+// batches. The STA ingress — nothing happened, and that IS the trigger, same shape as cron/sweep.
+// Cadence is daily (vercel.json), not hourly like cron/sweep — this hits the Xero API for a full
+// unreconciled-transactions walk (potentially dozens of pages), which is unnecessary load at an
+// hourly cadence for a backlog that changes at most a few times a day. See
+// docs/BANK_RECONCILIATION_SKILL_SCOPE.md §7 (Phasing) for the phase this belongs to.
 //
 // Deliberately its own route rather than folded into cron/sweep: this feeds a tier-A (agentic,
 // model-backed) task, not a tier-M mechanical sweep rule, and mixing the two mechanisms in one route

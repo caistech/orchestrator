@@ -82,6 +82,42 @@
       "maxAttempts": 1,
       "flowsUnlocked": ["14", "16", "56"],
       "notes": "Flow 14a — what we PAID, from Xero ACCPAY bill line items. NOT flow 14 in full: the registry asks for CURRENT material costs and no current-rate source is connected, so this answers what was billed on a date rather than what a thing costs today. Its refusal is deliberately stronger than past_pricing's: these are COSTS, and a model that quotes at cost gives the job away."
+    },
+    {
+      "kind": "bank_transactions.read",
+      "class": "read",
+      "label": "Unreconciled bank statement lines awaiting categorisation",
+      "connector": "xero",
+      "requiresConnection": true,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["101"],
+      "notes": "Flow 101. GET /BankTransactions?where=IsReconciled==false only — see src/connectors/xero.ts fetchUnreconciledBankTransactions. Read-only; nothing this tool returns can write to Xero. See docs/BANK_RECONCILIATION_SKILL_SCOPE.md."
+    },
+    {
+      "kind": "chart_of_accounts.read",
+      "class": "read",
+      "label": "The business's own chart of accounts",
+      "connector": "xero",
+      "requiresConnection": true,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["101"],
+      "notes": "Flow 101. GET /Accounts?where=Status==\"ACTIVE\" — the closed set of valid categorisation targets a proposal may be drawn from."
+    },
+    {
+      "kind": "coding_history.read",
+      "class": "read",
+      "label": "How this business has coded similar transactions before",
+      "connector": "xero",
+      "requiresConnection": true,
+      "requiresSenderIdentity": false,
+      "idempotent": true,
+      "maxAttempts": 1,
+      "flowsUnlocked": ["101"],
+      "notes": "Flow 101. A bounded sample (default 50) of already-RECONCILED lines, for pattern-matching only — never the whole reconciled ledger. The highest-leverage context for a categorisation proposal: a specific prior coding beats a generic category guess."
     }
   ]
 }

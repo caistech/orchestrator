@@ -53,6 +53,16 @@
       "maxCost": 0.08,
       "flowsUnlocked": ["26", "83", "123", "127", "130"],
       "notes": "Tier M (mechanical). The 7 existing sweep rules in src/rules.ts already cover this; this agent wraps them and feeds evidence to the evidence collector on completion."
+    },
+    {
+      "id": "reconciliation_agent",
+      "function": "Proposes a categorisation (account code, contact, tax rate) for a batch of unreconciled bank transactions, using the business's own chart of accounts and historical coding pattern. Never writes to Xero.",
+      "tools": ["bank_transactions.read", "chart_of_accounts.read", "coding_history.read"],
+      "model": "gpt-4.1-mini",
+      "maxIterations": 2,
+      "maxCost": 0.25,
+      "flowsUnlocked": ["101"],
+      "notes": "Phase 1 (docs/BANK_RECONCILIATION_SKILL_SCOPE.md). Tier A, ingress STA — fed by src/reconciliation-detector.ts on a schedule, not by a spoken utterance. No effect tool registered: this agent cannot write to Xero even if it tried (src/agents/runner.ts's 'stage_review' action writes to drafts/approvals only, never effects). maxCost set higher than the other agents' (0.01-0.08) because each task carries a batch of ~25 transactions plus chart-of-accounts and coding-history context, not a single draft — confirm empirically against the first real batch before trusting this figure at scale."
     }
   ]
 }

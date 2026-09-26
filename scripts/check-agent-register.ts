@@ -20,7 +20,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { allAgents, allAgentToolRefs, kindsOwnedBy } from '../src/agents/register';
+import { allAgents, allAgentToolRefs, kindsOwnedBy, STA_TRIGGERED_AGENTS } from '../src/agents/register';
 import { allTools, toolFor } from '../src/tools/register';
 import { resolveReadTool } from '../src/agents/runner';
 import { EVIDENCE_MAPPINGS } from '../src/genome/evidence-collector';
@@ -66,9 +66,31 @@ for (const agent of allAgents()) {
 // Reverse-map: every agent id must be reachable from at least one kind via agentForKind.
 // The mapping lives in register.ts (KIND_TO_AGENT, explicit by design — names by function,
 // not concatenation); kindsOwnedBy is the single source the check reads.
+const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+
 for (const agent of allAgents()) {
-  const routed = kindsOwnedBy(agent.id).length > 0;
-  check(`agent "${agent.id}" routes from a kind (${kindsOwnedBy(agent.id).join(', ') || 'none'})`, routed);
+  const kinds = kindsOwnedBy(agent.id);
+  const staEntry = STA_TRIGGERED_AGENTS[agent.id];
+
+  if (staEntry) {
+    // Not SAY-reachable by design — verify the DETECTOR IT CLAIMS actually references it, so
+    // "listed as STA-triggered" cannot silently substitute for "actually wired to anything".
+    let detectorRefsAgent = false;
+    try {
+      const source = readFileSync(join(repoRoot, staEntry.detectorFile), 'utf8');
+      detectorRefsAgent = source.includes(agent.id);
+    } catch {
+      detectorRefsAgent = false;
+    }
+    check(
+      `agent "${agent.id}" is STA-triggered by ${staEntry.detectorFile}`,
+      detectorRefsAgent,
+      detectorRefsAgent ? undefined : `${staEntry.detectorFile} does not reference agent id "${agent.id}"`,
+    );
+  } else {
+    const routed = kinds.length > 0;
+    check(`agent "${agent.id}" routes from a kind (${kinds.join(', ') || 'none'})`, routed);
+  }
 
   for (const ref of agent.tools) {
     check(`agent "${agent.id}" tool "${ref}" has a runner binding`, resolveReadTool(ref) !== null);

@@ -20,6 +20,12 @@ import { isExecutable } from '../tools/register';
 import { findComparableWork, comparablesAsContext, type Comparable } from '../knowledge/past-pricing';
 import { findMaterialCost, materialCostAsContext, type MaterialCost } from '../knowledge/material-cost';
 import { currentQuoteFormat, formatAsInstructions } from '../knowledge/quote-format';
+import {
+  xeroConnectionFor,
+  fetchUnreconciledBankTransactions,
+  fetchChartOfAccounts,
+  fetchCodingHistory,
+} from '../connectors/xero';
 
 // ── Read tool resolver ────────────────────────────────────────────────────────────────────────
 //
@@ -34,6 +40,25 @@ export interface ReadToolContext {
   utterance?: string;
   /** Client name for past-pricing lookup. */
   recipientName?: string;
+  /** The task's own payload, for tools whose scope is task-specific rather than tenant-wide
+   *  (e.g. reconciliation: WHICH batch of transaction ids this particular task covers). */
+  payload?: Record<string, unknown>;
+}
+
+/**
+ * Resolve a live Xero connection + credentials once, for the three reconciliation read tools below.
+ * Returns null (never throws) when the tenant has no connection — the tool's own result carries that
+ * as data ("not_connected") rather than failing the whole planning loop, matching the read-tool
+ * failure posture already established two lines below (a failed read tool degrades context, it does
+ * not fail the task).
+ */
+async function resolveXero(ctx: ReadToolContext) {
+  const clientId = process.env.XERO_CLIENT_ID;
+  const clientSecret = process.env.XERO_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  const connection = await xeroConnectionFor(ctx.supabase, ctx.tenantId);
+  if (!connection) return null;
+  return { connection, clientId, clientSecret };
 }
 
 export interface ReadToolResult {
@@ -59,6 +84,33 @@ const READ_TOOLS: Record<string, ReadToolFn> = {
     const stored = await currentQuoteFormat(ctx.supabase, ctx.tenantId);
     return { format: stored, instructions: stored ? formatAsInstructions(stored) : null };
   },
+  // ── Bank reconciliation categorisation (Phase 1) ─────────────────────────────────────────────
+  // See docs/BANK_RECONCILIATION_SKILL_SCOPE.md. All three GET-only; none can write to Xero.
+  'bank_transactions.read': async (ctx) => {
+    const xero = await resolveXero(ctx);
+    if (!xero) return { connected: false, lines: [] };
+
+    const page = Number(ctx.payload?.page ?? 1);
+    const batchIds = new Set((ctx.payload?.transaction_ids as string[] | undefined) ?? []);
+
+    const { lines } = await fetchUnreconciledBankTransactions(ctx.supabase, xero.connection, xero.clientId, xero.clientSecret, { page });
+    // Filter to exactly the ids the detector assigned to THIS task — the page may have moved on by
+    // the time the worker runs, and this task must only ever propose for the batch it was given.
+    const scoped = batchIds.size ? lines.filter((l) => batchIds.has(l.bankTransactionId)) : lines;
+    return { connected: true, lines: scoped };
+  },
+  'chart_of_accounts.read': async (ctx) => {
+    const xero = await resolveXero(ctx);
+    if (!xero) return { connected: false, accounts: [] };
+    const accounts = await fetchChartOfAccounts(ctx.supabase, xero.connection, xero.clientId, xero.clientSecret);
+    return { connected: true, accounts };
+  },
+  'coding_history.read': async (ctx) => {
+    const xero = await resolveXero(ctx);
+    if (!xero) return { connected: false, examples: [] };
+    const examples = await fetchCodingHistory(ctx.supabase, xero.connection, xero.clientId, xero.clientSecret, { limit: 50 });
+    return { connected: true, examples };
+  },
 };
 
 /**
@@ -80,6 +132,37 @@ function buildPlanPrompt(
   const toolContext = toolResults
     .map((r) => `[${r.tool}]\n${JSON.stringify(r.data, null, 2)}`)
     .join('\n\n');
+
+  // The reconciliation agent is STA-triggered (a cron detector, not a spoken utterance) and never
+  // emits an effect — a "stage_review" plan writes proposals to the review queue only. It needs its
+  // own prompt shape rather than the "Owner said" framing every SAY-triggered agent below shares,
+  // since there is no utterance and nothing here may ever write to Xero.
+  if (agent.id === 'reconciliation_agent') {
+    return [
+      `You are executing the task: "${agent.function}".`,
+      '',
+      'You NEVER write to Xero. Your only output is a proposed categorisation per transaction, for a',
+      'human (the business owner, then their accountant) to review and confirm.',
+      '',
+      toolContext ? `Context from read tools:\n${toolContext}` : '',
+      '',
+      'For EACH unreconciled line in bank_transactions.read\'s "lines", propose a categorisation using',
+      'ONLY account codes present in chart_of_accounts.read, informed by coding_history.read (how this',
+      'business has actually coded similar-looking lines before — prefer a documented prior pattern',
+      'over a generic guess). If a line looks like a personal (non-business) transaction and there is',
+      'no confident prior pattern for it, say so plainly rather than guessing at a business category.',
+      '',
+      'Produce a JSON object with:',
+      '  "action": "stage_review"',
+      '  "summary": one line, e.g. "23 transactions categorised, 2 flagged as possibly personal"',
+      '  "proposals": an array, one entry per line in bank_transactions.read, each:',
+      '    { "bankTransactionId": ..., "description": ..., "amount": ...,',
+      '      "proposedAccountCode": string or null, "proposedContact": string or null,',
+      '      "proposedTaxType": string or null, "confidence": "high"|"medium"|"low",',
+      '      "rationale": one short sentence, "possiblyPersonal": boolean }',
+      'Reply with ONLY that JSON object.',
+    ].filter(Boolean).join('\n');
+  }
 
   return [
     `You are executing the task: "${agent.function}".`,
@@ -168,6 +251,7 @@ export async function runAgentTask(ctx: RunContext): Promise<RunResult> {
     tenantId: task.tenant_id,
     utterance: task.utterance,
     recipientName: (task.payload?.recipient_name as string) ?? undefined,
+    payload: task.payload,
   };
 
   const toolResults: ReadToolResult[] = [];
@@ -249,6 +333,45 @@ export async function runAgentTask(ctx: RunContext): Promise<RunResult> {
 
   if (!planResult) {
     return fail('failed', 'plan produced no result');
+  }
+
+  // ── Reconciliation categorisation: stage for review, never an effect ──────────────────────
+  //
+  // This agent has NO effect tool in its registry entry (config/agents.json) — structurally, not
+  // just by convention, it cannot reach Xero. Its plan action is always "stage_review": write the
+  // proposed categorisations into `drafts` (the existing "what an approval gate holds" table,
+  // channel 'reconciliation_review') and hold them in `approvals`. No `effects` row is ever created
+  // for this action — Phase 1 makes zero writes to Xero (docs/BANK_RECONCILIATION_SKILL_SCOPE.md).
+  if (String(planResult.action ?? '') === 'stage_review') {
+    const proposals = Array.isArray(planResult.proposals) ? planResult.proposals : [];
+    const summary = String(planResult.summary ?? `${proposals.length} transactions categorised`);
+
+    const { error: draftError } = await supabase.from('drafts').insert({
+      task_id: task.id,
+      channel: 'reconciliation_review',
+      subject: summary,
+      body: JSON.stringify(proposals, null, 2),
+      recipients: [],
+    });
+    if (draftError) {
+      return fail('failed', `draft write failed: ${draftError.message}`);
+    }
+
+    await supabase.from('tasks').update({
+      status: 'awaiting_approval',
+      summary,
+      result: { agent_id: agent.id, iterations, totalCost, action: 'stage_review', proposalCount: proposals.length },
+    }).eq('id', task.id);
+
+    await supabase.from('approvals').insert({ task_id: task.id });
+
+    await supabase.from('task_events').insert({
+      task_id: task.id,
+      event: 'agent_completed',
+      detail: { agent_id: agent.id, iterations, totalCost, action: 'stage_review', proposalCount: proposals.length },
+    });
+
+    return { taskId: task.id, agentId: agent.id, iterations, totalCost, effect: null, status: 'completed' };
   }
 
   // ── Step 3: Map plan to effect ─────────────────────────────────────────────────────────────

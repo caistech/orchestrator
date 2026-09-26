@@ -326,6 +326,132 @@ export class XeroSourceConfirmer implements SourceConfirmer {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Bank reconciliation categorisation (Phase 1 — read only, see
+// docs/BANK_RECONCILIATION_SKILL_SCOPE.md). Three GET-only reads feeding the reconciliation_agent's
+// planning context. None of these write anything — the categorisation they support is staged for
+// human review, never applied to Xero automatically.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface UnreconciledLine {
+  bankTransactionId: string;
+  date: string | null;
+  description: string;
+  amount: number;
+  isSpent: boolean;
+  contactName: string | null;
+}
+
+/**
+ * Unreconciled bank statement lines, oldest first, capped by `limit` — batching is the caller's job
+ * (the detector), not this function's. `page` follows Xero's own 1-based pagination so a caller can
+ * walk the full backlog without this function needing to know about "batches" at all.
+ */
+export async function fetchUnreconciledBankTransactions(
+  supabase: SupabaseClient,
+  connection: XeroConnection,
+  clientId: string,
+  clientSecret: string,
+  options: { page?: number } = {},
+): Promise<{ lines: UnreconciledLine[]; hasMore: boolean }> {
+  const token = await accessTokenFor(supabase, connection, clientId, clientSecret);
+  const page = options.page ?? 1;
+
+  const data = await xeroGet(
+    `/BankTransactions?where=IsReconciled==false&order=Date%20ASC&page=${page}`,
+    token,
+    connection.provider_org_id,
+  );
+
+  const raw = (data.BankTransactions ?? []) as any[];
+  const lines: UnreconciledLine[] = raw.map((t) => ({
+    bankTransactionId: t.BankTransactionID,
+    date: t.DateString ?? null,
+    description:
+      (t.Reference && String(t.Reference).trim()) ||
+      (t.LineItems?.[0]?.Description && String(t.LineItems[0].Description).trim()) ||
+      '(no description)',
+    amount: typeof t.Total === 'number' ? t.Total : 0,
+    isSpent: t.Type === 'SPEND',
+    contactName: t.Contact?.Name ?? null,
+  }));
+
+  // Xero's list endpoint pages at 100; a full page means there is likely another one. Cheap and
+  // conservative — the detector re-checks the real count rather than trusting this alone.
+  return { lines, hasMore: raw.length >= 100 };
+}
+
+export interface ChartOfAccount {
+  code: string;
+  name: string;
+  type: string;
+  taxType: string | null;
+}
+
+/** The business's own chart of accounts — the closed set of valid categorisation targets. */
+export async function fetchChartOfAccounts(
+  supabase: SupabaseClient,
+  connection: XeroConnection,
+  clientId: string,
+  clientSecret: string,
+): Promise<ChartOfAccount[]> {
+  const token = await accessTokenFor(supabase, connection, clientId, clientSecret);
+  const data = await xeroGet('/Accounts?where=Status=="ACTIVE"', token, connection.provider_org_id);
+  const accounts = (data.Accounts ?? []) as any[];
+  return accounts.map((a) => ({
+    code: String(a.Code ?? ''),
+    name: String(a.Name ?? ''),
+    type: String(a.Type ?? ''),
+    taxType: a.TaxType ?? null,
+  }));
+}
+
+export interface CodingPatternExample {
+  description: string;
+  contactName: string | null;
+  accountCode: string | null;
+  taxType: string | null;
+}
+
+/**
+ * How this business has ACTUALLY coded similar-looking lines before — the single highest-leverage
+ * context for a categorisation proposal (BANK_RECONCILIATION_SKILL_SCOPE.md §4). Reads already
+ * RECONCILED lines and returns a bounded sample for the agent to pattern-match against, never the
+ * whole reconciled history — this is planning context, not a second copy of the ledger.
+ *
+ * `descriptionContains` narrows to lines whose text plausibly matches the batch being categorised
+ * (e.g. distinct vendor tokens already seen in this batch); the caller extracts those tokens.
+ * Capped at `limit` (default 50) — enough examples to establish a pattern, not an export of the
+ * business's history.
+ */
+export async function fetchCodingHistory(
+  supabase: SupabaseClient,
+  connection: XeroConnection,
+  clientId: string,
+  clientSecret: string,
+  options: { limit?: number } = {},
+): Promise<CodingPatternExample[]> {
+  const limit = options.limit ?? 50;
+  const token = await accessTokenFor(supabase, connection, clientId, clientSecret);
+
+  const data = await xeroGet(
+    `/BankTransactions?where=IsReconciled==true&order=Date%20DESC&page=1`,
+    token,
+    connection.provider_org_id,
+  );
+
+  const raw = ((data.BankTransactions ?? []) as any[]).slice(0, limit);
+  return raw.map((t) => ({
+    description:
+      (t.Reference && String(t.Reference).trim()) ||
+      (t.LineItems?.[0]?.Description && String(t.LineItems[0].Description).trim()) ||
+      '',
+    contactName: t.Contact?.Name ?? null,
+    accountCode: t.LineItems?.[0]?.AccountCode ?? null,
+    taxType: t.LineItems?.[0]?.TaxType ?? null,
+  }));
+}
+
 /** The live connection for a tenant, or null when they have not connected (or have revoked). */
 export async function xeroConnectionFor(
   supabase: SupabaseClient,

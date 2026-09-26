@@ -125,6 +125,20 @@ export function kindsOwnedBy(agentId: string): string[] {
   return Object.entries(KIND_TO_AGENT).filter(([, id]) => id === agentId).map(([kind]) => kind);
 }
 
+/**
+ * Agents that are legitimately unreachable from any SAY-classified kind, because nothing is spoken
+ * to trigger them — they're fed by an STA (state/schedule) detector instead, same as a sweep rule.
+ *
+ * EXPLICIT and SMALL on purpose, matching KIND_TO_AGENT's own "explicit, not derived" discipline
+ * just above: check-agent-register.ts treats membership here as an alternative to routing from a
+ * kind, but ALSO verifies the named detector file actually references the agent id — an agent
+ * simply listed here with no real detector wiring would otherwise be an unreachable agent that looks
+ * reachable, which is exactly the failure mode this whole check exists to catch.
+ */
+export const STA_TRIGGERED_AGENTS: Record<string, { detectorFile: string }> = {
+  reconciliation_agent: { detectorFile: 'src/reconciliation-detector.ts' },
+};
+
 export function agentForKind(kind: string): AgentEntry | null {
   const agentId = KIND_TO_AGENT[kind];
   if (!agentId) return null;

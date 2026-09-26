@@ -14,10 +14,17 @@
 
 import { NextResponse } from 'next/server';
 import { detectReconciliationWork } from '@/src/reconciliation-detector';
-import { serviceClient, SEED_TENANT } from '@/lib/supabase';
+import { serviceClient } from '@/lib/supabase';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+// Phase 1's single real test case: Global Buildtech Australia Pty Ltd's own Xero org, connected
+// under this tenant (not the "Global Buildtech Australia"-NAMED tenants, and not Factory2Key, which
+// held the Xero connection at first but is a different business — see the 2026-09-26 connection
+// audit in chat/commit history). Confirmed live: connections.tenant_id = this value, provider = xero,
+// revoked_at is null, scopes include accounting.banktransactions.read.
+const RECONCILIATION_TENANT = 'bdde9f4c-0653-4d32-b3f4-0a731e32fe10';
 
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -28,9 +35,9 @@ export async function GET(request: Request) {
   }
 
   // TODO before this runs against more than one tenant: iterate every tenant with a live Xero
-  // connection, not just SEED_TENANT. Left single-tenant deliberately for Phase 1's one real test
-  // case (Global Buildtech) — see BANK_RECONCILIATION_SKILL_SCOPE.md §"what Phase 1 does not do".
-  const report = await detectReconciliationWork({ supabase: serviceClient(), tenantId: SEED_TENANT });
+  // connection, not just RECONCILIATION_TENANT. Left single-tenant deliberately for Phase 1's one
+  // real test case — see BANK_RECONCILIATION_SKILL_SCOPE.md §"what Phase 1 does not do".
+  const report = await detectReconciliationWork({ supabase: serviceClient(), tenantId: RECONCILIATION_TENANT });
 
   console.log('[cron/reconciliation-detect]', report);
   return NextResponse.json(report);

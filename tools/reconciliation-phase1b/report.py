@@ -114,10 +114,18 @@ def write_report(lines: list[ReconLine], output_path: str) -> None:
     summary["A2"] = f"Generated {dt.datetime.now().isoformat(timespec='seconds')}"
 
     by_action: dict[str, int] = {}
-    by_fy_value: dict[str, float] = {}
+    # Spend and receive kept SEPARATE, never netted -- a $5,000 spend line and a $5,000 receive
+    # line summing to $0 tells a reviewer nothing true about either of them (found reviewing real
+    # output: the FY2023/24 total showed -$8,494.93, an arbitrary figure from netting unrelated
+    # money in against unrelated money out).
+    by_fy_spend: dict[str, float] = {}
+    by_fy_receive: dict[str, float] = {}
     for l in lines:
         by_action[l.action] = by_action.get(l.action, 0) + 1
-        by_fy_value[l.fy] = by_fy_value.get(l.fy, 0.0) + l.amount
+        if l.amount < 0:
+            by_fy_spend[l.fy] = by_fy_spend.get(l.fy, 0.0) + (-l.amount)
+        else:
+            by_fy_receive[l.fy] = by_fy_receive.get(l.fy, 0.0) + l.amount
 
     row = 4
     summary.cell(row=row, column=1, value="Action").font = Font(bold=True)
@@ -130,11 +138,13 @@ def write_report(lines: list[ReconLine], output_path: str) -> None:
 
     row += 1
     summary.cell(row=row, column=1, value="FY").font = Font(bold=True)
-    summary.cell(row=row, column=2, value="Total value ($)").font = Font(bold=True)
+    summary.cell(row=row, column=2, value="Total spend ($)").font = Font(bold=True)
+    summary.cell(row=row, column=3, value="Total receive ($)").font = Font(bold=True)
     row += 1
-    for fy, total in sorted(by_fy_value.items()):
+    for fy in sorted(set(by_fy_spend) | set(by_fy_receive)):
         summary.cell(row=row, column=1, value=fy)
-        summary.cell(row=row, column=2, value=round(total, 2))
+        summary.cell(row=row, column=2, value=round(by_fy_spend.get(fy, 0.0), 2))
+        summary.cell(row=row, column=3, value=round(by_fy_receive.get(fy, 0.0), 2))
         row += 1
 
     row += 1

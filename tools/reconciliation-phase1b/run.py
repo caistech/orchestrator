@@ -10,6 +10,7 @@ Output: output/fy2324_batch_N.xlsx, output/fy2425_batch_N.xlsx (gitignored — r
 import datetime as dt
 import os
 import sys
+from typing import Optional
 
 import config
 import dedupe
@@ -67,6 +68,33 @@ def fetch_all_unreconciled(access_token: str, org_tenant_id: str) -> list[dict]:
     return lines
 
 
+# Templated, non-blank starting-point questions per action/flag. Not as specific as a hand-written
+# question (a human still reads and can sharpen these), but the field must never be blank — a
+# blank "question" column next to a line marked "needs review" was one of the real bugs found
+# running this against live data: it looks answered when nothing was ever asked.
+QUESTION_TEMPLATES = {
+    "FY24_UNRECORDED": "This line wasn't found in the ledgers/notes we hold — can you confirm how it was (or should be) coded in the FINAL FY23/24 accounts?",
+    "MATCH_UNVERIFIED": "A candidate ledger entry may exist for this line but hasn't been confirmed against the real ledger — can you confirm which entry (if any) this matches?",
+    "MATCH_CHECK_LABEL": "The ledger label for this line doesn't match its actual amount/date — can you confirm which entry this really is, and correct the label?",
+    "DIRECTOR_LOAN_REVIEW": "Is there a receipt/business purpose on file for this transfer, or should it be treated as drawings?",
+    "RELATED_PARTY_REVIEW": "Should this be treated as a NatureZen related-party item rather than a GBTA cost?",
+    "LINKED_ACCOUNT_CHECK": "This wasn't found in the GBTA bank data we hold — was it paid from the second, linked NAB account?",
+}
+
+
+def _question_for(action: str, flags: list[str]) -> tuple[Optional[str], str]:
+    """Returns (question_text, owner). Priority: action-level question first (it's the primary
+    thing needing an answer), then the first flag with a template."""
+    if action in QUESTION_TEMPLATES:
+        from report import FLAG_OWNER
+        return QUESTION_TEMPLATES[action], FLAG_OWNER.get(action, "Rimal")
+    for f in flags:
+        if f in QUESTION_TEMPLATES:
+            from report import FLAG_OWNER
+            return QUESTION_TEMPLATES[f], FLAG_OWNER.get(f, "Rimal")
+    return None, ""
+
+
 def process_line(
     line: dict,
     csv_rows: list[narration.BankCsvRow],
@@ -78,55 +106,71 @@ def process_line(
     amount = line["amount"]
     xero_desc = line["description"]
 
+    # ALWAYS attempt the real bank-CSV lookup, regardless of what Xero's own description says.
+    # Xero sometimes carries a non-empty but uninformative placeholder ("No bank statement line")
+    # rather than a genuinely empty field — a strict `== "No description"` check missed those
+    # entirely (found running against live data: 6 internal-transfer lines were never even
+    # checked against the CSV or the transfer/rule logic because of exactly this). Real bank
+    # narration is always preferred over Xero's own text when both exist.
     bank_narration_text = ""
     bank_category = ""
     merchant = ""
     rule_flags = rules.RuleFlags()
+    match_text_for_rules = xero_desc
 
     if line_date is not None:
-        if xero_desc == "No description":
-            match = narration.find_narration(csv_rows, amount, line_date)
-            if match.row:
-                bank_narration_text = match.row.transaction_details
-                bank_category = match.row.category
-                merchant = match.row.merchant_name
-                is_transfer = transfers.is_internal_transfer(match.row)
-                rule_flags = rules.apply_hard_rules(match.row, is_transfer)
-            else:
-                rule_flags = rules.RuleFlags(flags=[match.flag] if match.flag else [])
-        else:
-            fake_row = narration.BankCsvRow(
-                date=line_date, amount=amount, transaction_type="", transaction_details=xero_desc,
-                category="", merchant_name="", processed_on=None, source_file="xero",
-            )
-            is_transfer = transfers.is_internal_transfer(fake_row)
-            rule_flags = rules.apply_hard_rules(fake_row, is_transfer)
-            bank_narration_text = xero_desc
+        match = narration.find_narration(csv_rows, amount, line_date)
+        if match.row:
+            bank_narration_text = match.row.transaction_details
+            bank_category = match.row.category
+            merchant = match.row.merchant_name
+            match_text_for_rules = bank_narration_text
+        elif xero_desc and xero_desc not in ("No description", "No bank statement line"):
+            match_text_for_rules = xero_desc
+            bank_narration_text = xero_desc  # no CSV coverage for this date (e.g. pre-17-May-2024)
+            # — still show Xero's own text rather than leaving the Detail tab blank.
+
+        fake_row = narration.BankCsvRow(
+            date=line_date, amount=amount, transaction_type="", transaction_details=match_text_for_rules,
+            category=bank_category, merchant_name=merchant, processed_on=None, source_file="xero",
+        )
+        is_transfer = transfers.is_internal_transfer(fake_row)
+        rule_flags = rules.apply_hard_rules(fake_row, is_transfer)
+    else:
+        is_transfer = False
 
     fy = "FY2023/24" if (line_date is None or config.is_fy2324(line_date)) else "FY2024/25"
-    match_text = bank_narration_text or xero_desc
 
-    if fy == "FY2023/24":
-        match_result = (
-            fy2324_match.match_fy2324(seed, amount, line_date) if line_date else None
-        )
+    matched_ledger, matched_date, matched_description = None, None, None
+    proposed_account, proposed_tax, confidence, propose_rationale = None, None, "n/a", ""
+
+    if is_transfer:
+        # Step 2's own bank-CSV tagging is direct evidence and takes priority over whatever the
+        # seed tabs separately say — matches the scope doc's own Step 4 table exactly ("Internal
+        # transfer (Step 2) -> LINKED_ACCOUNT").
+        action = "LINKED_ACCOUNT"
+        confidence = "High"
+        propose_rationale = "NAB-categorised internal transfer — the linked NAB account, never income or expense."
+    elif fy == "FY2023/24":
+        match_result = fy2324_match.match_fy2324(seed, amount, line_date) if line_date else None
         action = match_result.action if match_result else "FY24_UNRECORDED"
-        matched_detail = (
-            match_result.matches[0].detail if (match_result and match_result.matches) else None
-        )
-        proposed_account, proposed_tax, confidence, propose_rationale = None, None, "n/a", "FY2023/24 — match only, never a fresh proposal."
+        if match_result and match_result.matches:
+            best = match_result.matches[0]
+            matched_ledger = best.source_tab
+            matched_date = best.date
+            matched_description = best.matched_description
+        confidence = "High" if action == "MATCH_EXISTING" else "Medium" if action in ("MATCH_UNVERIFIED", "MATCH_CHECK_LABEL") else "Low"
+        propose_rationale = "FY2023/24 — match only, never a fresh proposal."
     else:
-        # LINKED_ACCOUNT / DIRECTOR_LOAN_REVIEW etc. still apply to FY24/25 lines, but a proposal
-        # is still produced — the hard rule is a REVIEW flag on top, not a block (scope §5: "the
-        # agent flags but never resolves", not "the agent skips").
-        proposal = fy2425_propose.propose(match_text, line["contact_name"], history, chart)
+        proposal = fy2425_propose.propose(match_text_for_rules, line["contact_name"], history, chart)
         proposed_account, proposed_tax = proposal.account_code, proposal.tax_type
         confidence, propose_rationale = proposal.confidence, proposal.rationale
         action = "PROPOSE_CODING" if proposal.account_code else "NO_CONFIDENT_PATTERN"
-        matched_detail = None
 
     flags = rule_flags.flags
     rationale = ", ".join(rule_flags.notes) if rule_flags.notes else propose_rationale
+
+    question, owner = _question_for(action, flags)
 
     return ReconLine(
         xero_line_id=line["id"],
@@ -141,10 +185,13 @@ def process_line(
         action=action,
         proposed_account=proposed_account,
         proposed_tax_type=proposed_tax,
-        matched_description=matched_detail,
+        matched_ledger=matched_ledger,
+        matched_date=matched_date,
+        matched_description=matched_description,
         confidence=confidence,
         rationale=rationale,
         flags=flags,
+        question=question or "",
     )
 
 
@@ -192,7 +239,8 @@ def main():
         for i in range(0, len(lines), BATCH_SIZE):
             batch = lines[i : i + BATCH_SIZE]
             batch_num = i // BATCH_SIZE + 1
-            path = f"output/{label}_batch_{batch_num}.xlsx"
+            suffix = os.environ.get("OUTPUT_SUFFIX", "")
+            path = f"output/{label}_batch_{batch_num}{suffix}.xlsx"
             write_report(batch, path)
             written.append((path, len(batch)))
 

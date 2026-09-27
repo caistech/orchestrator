@@ -89,8 +89,7 @@ def apply_hard_rules(row: BankCsvRow, is_internal_transfer: bool) -> RuleFlags:
         result.add(
             "GST_FREE_INTERNATIONAL_TRAVEL",
             "Overseas travel hint in narration — international travel, GST-free/no input tax "
-            "credit unless a tax invoice shows an Australian GST registration. (Batch 1 error: "
-            "Napa/Santa Rosa were coded as national travel with GST — do not repeat.)",
+            "credit unless a tax invoice shows an Australian GST registration.",
         )
 
     if REVERSAL_HINTS.search(text):

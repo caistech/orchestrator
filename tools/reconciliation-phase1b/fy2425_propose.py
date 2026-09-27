@@ -14,6 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+import coding_rules
 import narration
 import xero_client
 
@@ -151,10 +152,27 @@ def propose(
     contact_name: Optional[str],
     history: list[CodingExample],
     chart: list[ChartAccount],
+    direction: str = "spend",
+    category: str = "",
 ) -> Proposal:
-    """Match by keyword overlap against prior coding examples. A tie or no match is Low confidence
-    with no account/tax proposed — degrade, don't fake (DATA_STANDARD R4), never invent a code the
-    chart of accounts doesn't have."""
+    """Primary classifier: coding_rules.py's 27 hand-verified rules, built from 1,118 real FY25/26
+    NAB lines (v3 guidance pack's "Coding Rules" tab). Falls back to keyword-overlap against Xero's
+    own coding history only when no rule matches -- that fallback found almost nothing useful
+    against live data (Xero's own reconciled-transaction labels are thin and generic), which is
+    exactly why the rule-based classifier is now checked first, not second."""
+    rule = coding_rules.classify(narration_text, category, direction)
+    if rule:
+        confidence = "High" if rule.how_to_apply == "Bank rule" else "Medium"
+        return Proposal(
+            account_code=rule.account,
+            tax_type=rule.tax_type,
+            confidence=confidence,
+            rationale=f"Coding rule {rule.rule_id}: {rule.notes}",
+        )
+
+    # Fallback: keyword overlap against prior coding examples. A tie or no match is Low confidence
+    # with no account/tax proposed — degrade, don't fake (DATA_STANDARD R4), never invent a code
+    # the chart of accounts doesn't have.
     valid_codes = {a.code for a in chart}
     target_keywords = _keywords(narration_text) | _keywords(contact_name or "")
 

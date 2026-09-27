@@ -34,6 +34,14 @@ GBTA_NABB_V6_SHEET = "Original GBTA NABB Business Tra"
 # AND, per scope doc §3, the interim FY23/24 match seed until Rimal supplies the FINAL ledgers.
 GUIDANCE_PACK = _p("GBTA_Reconciliation_Guidance_Pack_for_Rimal.xlsx")
 
+# v3 (2026-09-28) rewrote the "Batch 1 Review" tab into an operational instruction sheet (it's now
+# literally this tool's own output, reformatted) -- a DIFFERENT column schema that fy2324_match.py's
+# _load_batch1_review() would misparse. Its "Internal Transfers" and "Dennis Transfers FY23-24"
+# tabs are UNCHANGED from v1 (same row counts, checked directly), so GUIDANCE_PACK above stays
+# pointed at v1 for those. v3 is only used for its genuinely new "Coding Rules" tab (30 rules built
+# from 1,118 real FY25/26 NAB lines) -- see coding_rules.py.
+GUIDANCE_PACK_V3 = _p("GBTA_Reconciliation_Guidance_Pack_for_Rimal_v3.xlsx")
+
 FY2425_HANDOVER_PACK = _p("Copy of GBTA_FY2024-25_Accountant_Handover_Pack - Updated 12 Aug 26.xlsx")
 
 # NOT YET HELD (scope doc open questions #3 and #4). Left as None rather than a guessed path — a

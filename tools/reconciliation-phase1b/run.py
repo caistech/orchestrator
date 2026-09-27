@@ -208,7 +208,10 @@ def process_line(
         elif action == "FY24_UNRECORDED" and "DIRECTOR_LOAN_REVIEW" in rule_flags.flags:
             proposed_account = "Owner A Drawings"
     else:
-        proposal = fy2425_propose.propose(match_text_for_rules, line["contact_name"], history, chart)
+        direction = "spend" if amount < 0 else "receive"
+        proposal = fy2425_propose.propose(
+            match_text_for_rules, line["contact_name"], history, chart, direction, bank_category
+        )
         proposed_account, proposed_tax = proposal.account_code, proposal.tax_type
         confidence, propose_rationale = proposal.confidence, proposal.rationale
         action = "PROPOSE_CODING" if proposal.account_code else "NO_CONFIDENT_PATTERN"

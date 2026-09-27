@@ -26,7 +26,22 @@ export const dynamic = 'force-dynamic';
 // revoked_at is null, scopes include accounting.banktransactions.read.
 const RECONCILIATION_TENANT = 'bdde9f4c-0653-4d32-b3f4-0a731e32fe10';
 
+// ⚠️ PAUSED 2026-09-27. Batch 1 (the first and only real run) showed the Phase 1 approach is wrong,
+// not just incomplete: it has no fiscal-year gate (proposed fresh coding for lines that were ALL
+// FY2023/24 — a year Chequers had already lodged, 5 Aug 2025), no bank-CSV/PDF narration (guessed
+// categories Xero itself has no description for), and no concept of the second, not-yet-in-Xero
+// linked NAB account funding most of the "unknown" credits. Confirmed against the GBTA accountant's
+// annotated guidance pack. See docs/SCOPE_reconciliation_agent_phase1b.md (rev 2) for the corrected
+// pipeline. Do not remove this guard until that scope replaces the logic below — a scheduled OR
+// manually-curled run before then repeats the same wrong proposals at scale.
+const PAUSED_REASON =
+  'reconciliation_agent Phase 1 paused pending Phase 1b (docs/SCOPE_reconciliation_agent_phase1b.md) — see the guard comment in this route';
+
 export async function GET(request: Request) {
+  return NextResponse.json({ error: PAUSED_REASON }, { status: 503 });
+}
+
+async function _unusedUntilPhase1b(request: Request) {
   const secret = process.env.CRON_SECRET;
   // Fail closed — this creates real tasks, and downstream a real (though read-only) OpenAI spend.
   if (!secret) return NextResponse.json({ error: 'Cron not configured' }, { status: 503 });

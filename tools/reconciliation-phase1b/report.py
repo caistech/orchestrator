@@ -29,6 +29,7 @@ REVIEW_FLAGS = {
     "REVERSAL_PAIR",
     "NEEDS_MERCHANT_NORMALISATION",
     "NO_NARRATION_SOURCE",
+    "NO_CONFIDENT_PATTERN",
 }
 
 # Who to route each flag to first — matches scope doc §5/§10's own framing of who answers what.
@@ -48,6 +49,7 @@ FLAG_OWNER = {
     "REVERSAL_PAIR": "Rimal",
     "NEEDS_MERCHANT_NORMALISATION": "Dennis",
     "NO_NARRATION_SOURCE": "Dennis",
+    "NO_CONFIDENT_PATTERN": "Rimal",
 }
 
 
@@ -81,6 +83,15 @@ DETAIL_COLUMNS = [
     "proposed_tax_type", "matched_ledger", "matched_date", "matched_description", "confidence",
     "rationale", "flags", "question",
 ]
+
+
+def _effective_flags(line: ReconLine) -> list[str]:
+    """`action` (MATCH_AMBIGUOUS, FY24_UNRECORDED, NO_CONFIDENT_PATTERN, ...) and `flags` (the
+    hard-rule flags: DIRECTOR_LOAN_REVIEW, LINKED_ACCOUNT, ...) are separate fields on ReconLine,
+    but REVIEW_FLAGS/FLAG_OWNER need to see both — without this, a line whose ONLY issue is
+    MATCH_AMBIGUOUS never reached the Flagged tab at all (found 2026-09-27 running against the
+    real live backlog: 2 genuinely ambiguous lines were silently missing from Flagged)."""
+    return ([line.action] if line.action else []) + line.flags
 
 
 def _row_for(line: ReconLine) -> list:
@@ -127,13 +138,13 @@ def write_report(lines: list[ReconLine], output_path: str) -> None:
         row += 1
 
     row += 1
-    questions_for_dennis = [l for l in lines if FLAG_OWNER.get(l.flags[0] if l.flags else "") == "Dennis"] if lines else []
+    questions_for_dennis = [l for l in lines if any(FLAG_OWNER.get(f) == "Dennis" for f in _effective_flags(l))]
     summary.cell(row=row, column=1, value=f"Questions for Dennis: {len(questions_for_dennis)}").font = Font(bold=True)
     row += 1
-    questions_for_rimal = [l for l in lines if any(FLAG_OWNER.get(f) == "Rimal" for f in l.flags)]
+    questions_for_rimal = [l for l in lines if any(FLAG_OWNER.get(f) == "Rimal" for f in _effective_flags(l))]
     summary.cell(row=row, column=1, value=f"Questions for Rimal: {len(questions_for_rimal)}").font = Font(bold=True)
     row += 1
-    questions_for_ken = [l for l in lines if any(FLAG_OWNER.get(f) == "Ken" for f in l.flags)]
+    questions_for_ken = [l for l in lines if any(FLAG_OWNER.get(f) == "Ken" for f in _effective_flags(l))]
     summary.cell(row=row, column=1, value=f"Questions for Ken: {len(questions_for_ken)}").font = Font(bold=True)
 
     # --- Flagged ---
@@ -144,11 +155,12 @@ def write_report(lines: list[ReconLine], output_path: str) -> None:
         flagged.cell(row=1, column=col, value=name).font = Font(bold=True)
     r = 2
     for line in lines:
-        if not any(f in REVIEW_FLAGS for f in line.flags):
+        effective = _effective_flags(line)
+        if not any(f in REVIEW_FLAGS for f in effective):
             continue
         for col, value in enumerate(_row_for(line), start=1):
             flagged.cell(row=r, column=col, value=value).fill = yellow
-        owner = next((FLAG_OWNER[f] for f in line.flags if f in FLAG_OWNER), "Rimal")
+        owner = next((FLAG_OWNER[f] for f in effective if f in FLAG_OWNER), "Rimal")
         flagged.cell(row=r, column=len(header), value=owner).fill = yellow
         r += 1
 

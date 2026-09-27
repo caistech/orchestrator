@@ -79,6 +79,32 @@ def match_fy2324(seed: list[SeedEntry], amount: float, line_date: dt.date, windo
     ]
     if not candidates:
         return FY2324MatchResult(action="FY24_UNRECORDED", matches=[])
-    if len(candidates) == 1:
+
+    # Group by (date, amount): the SAME real transaction corroborated across multiple seed tabs
+    # (e.g. Batch 1 Review AND Dennis Transfers FY23-24 both covering it) is one candidate, not
+    # several — only a DISTINCT (date, amount) pair is a genuine competing match. Without this, a
+    # line reviewed in two of our own seed tabs was wrongly reported MATCH_AMBIGUOUS instead of
+    # MATCH_EXISTING (found 2026-09-27 checking real output, not assumed).
+    #
+    # Prefer an EXACT date match first, same as narration.py's own Step 1 precedent — a recurring
+    # weekly $1,000 transfer means several genuinely distinct transfers share an amount within the
+    # 7-day window, but if exactly one of them lands on the line's own date, that's the real one,
+    # not an ambiguity (found the same way: real output showed 5 candidates for one line, 4 of
+    # which were different weeks' transfers that happened to share the amount).
+    def _group(rows: list[SeedEntry]) -> dict[tuple, list[SeedEntry]]:
+        groups: dict[tuple, list[SeedEntry]] = {}
+        for c in rows:
+            key = (c.date, round(c.amount, 2))
+            groups.setdefault(key, []).append(c)
+        return groups
+
+    exact_date = [c for c in candidates if c.date == line_date]
+    if exact_date:
+        exact_groups = _group(exact_date)
+        if len(exact_groups) == 1:
+            return FY2324MatchResult(action="MATCH_EXISTING", matches=exact_date)
+
+    groups = _group(candidates)
+    if len(groups) == 1:
         return FY2324MatchResult(action="MATCH_EXISTING", matches=candidates)
     return FY2324MatchResult(action="MATCH_AMBIGUOUS", matches=candidates)

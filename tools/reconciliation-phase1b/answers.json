@@ -1,0 +1,34 @@
+{
+  "91915625-4a80-4faf-a414-3d0a91fd6aee": {
+    "action": null,
+    "proposed_account": "Travel - International",
+    "proposed_tax_type": "GST Free Expenses",
+    "rationale": null,
+    "answered_by": "Dennis",
+    "note": "Business travel, paid on the GBTA card (V3234). Rimal: if Chequers put this in Owner A Drawings, move it to Travel - International."
+  },
+  "428b8014-67b9-416d-9cdf-bfc5bb716873": {
+    "action": null,
+    "proposed_account": "Travel - International",
+    "proposed_tax_type": "GST Free Expenses",
+    "rationale": null,
+    "answered_by": "Dennis",
+    "note": "Business travel, paid on the GBTA card (V3234). Rimal: if Chequers put this in Owner A Drawings, move it to Travel - International."
+  },
+  "61477bdb-1002-449a-ba3f-8e6e24fc5287": {
+    "action": "FY24_UNRECORDED",
+    "proposed_account": "Owner A Drawings",
+    "proposed_tax_type": "BAS Excluded",
+    "rationale": null,
+    "answered_by": "Dennis",
+    "note": "This was a transfer to Dennis, not a card purchase, so there is no supplier record behind it. Treat as drawings unless the card purchase itself is found on a statement."
+  },
+  "8c7725a1-7786-44c4-82d5-de51bcc01eee": {
+    "action": "FY24_UNRECORDED",
+    "proposed_account": "Owner A Drawings",
+    "proposed_tax_type": "BAS Excluded",
+    "rationale": null,
+    "answered_by": "Dennis",
+    "note": "Not a business expense. Owner A Drawings (Division 7A)."
+  }
+}

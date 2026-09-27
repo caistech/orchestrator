@@ -30,6 +30,7 @@ REVIEW_FLAGS = {
     "NEEDS_MERCHANT_NORMALISATION",
     "NO_NARRATION_SOURCE",
     "NO_CONFIDENT_PATTERN",
+    "MATCH_UNVERIFIED",
 }
 
 # Who to route each flag to first — matches scope doc §5/§10's own framing of who answers what.
@@ -50,6 +51,11 @@ FLAG_OWNER = {
     "NEEDS_MERCHANT_NORMALISATION": "Dennis",
     "NO_NARRATION_SOURCE": "Dennis",
     "NO_CONFIDENT_PATTERN": "Rimal",
+    # Must stay in sync with run.py's QUESTION_TEMPLATES action keys -- a key present in one but
+    # not the other is exactly how this dict silently under-counted "Questions for Rimal" earlier
+    # today (MATCH_UNVERIFIED had a real, unanswered question but no owner mapping here, so it
+    # was invisible to both the Flagged tab and the Summary count).
+    "MATCH_UNVERIFIED": "Rimal",
 }
 
 
@@ -147,14 +153,24 @@ def write_report(lines: list[ReconLine], output_path: str) -> None:
         summary.cell(row=row, column=3, value=round(by_fy_receive.get(fy, 0.0), 2))
         row += 1
 
+    # Count LINES THAT ACTUALLY HAVE A QUESTION, never "any row with an owned flag" -- the
+    # six LINKED_ACCOUNT rows have no question at all (a transfer just IS a transfer, nothing to
+    # ask), but "LINKED_ACCOUNT" maps to an owner in FLAG_OWNER, so the old count included them
+    # anyway. Confirmed wrong on real output: Rimal showed 12 when only a handful of rows had a
+    # real, non-blank question.
+    def _owner_for(line: ReconLine) -> Optional[str]:
+        if not line.question:
+            return None
+        return next((FLAG_OWNER[f] for f in _effective_flags(line) if f in FLAG_OWNER), None)
+
     row += 1
-    questions_for_dennis = [l for l in lines if any(FLAG_OWNER.get(f) == "Dennis" for f in _effective_flags(l))]
+    questions_for_dennis = [l for l in lines if _owner_for(l) == "Dennis"]
     summary.cell(row=row, column=1, value=f"Questions for Dennis: {len(questions_for_dennis)}").font = Font(bold=True)
     row += 1
-    questions_for_rimal = [l for l in lines if any(FLAG_OWNER.get(f) == "Rimal" for f in _effective_flags(l))]
+    questions_for_rimal = [l for l in lines if _owner_for(l) == "Rimal"]
     summary.cell(row=row, column=1, value=f"Questions for Rimal: {len(questions_for_rimal)}").font = Font(bold=True)
     row += 1
-    questions_for_ken = [l for l in lines if any(FLAG_OWNER.get(f) == "Ken" for f in _effective_flags(l))]
+    questions_for_ken = [l for l in lines if _owner_for(l) == "Ken"]
     summary.cell(row=row, column=1, value=f"Questions for Ken: {len(questions_for_ken)}").font = Font(bold=True)
 
     # --- Flagged ---

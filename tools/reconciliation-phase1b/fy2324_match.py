@@ -15,6 +15,7 @@ by their real, known structure instead of dumping every column into one free-tex
 """
 
 import datetime as dt
+import re
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,6 +44,62 @@ def _to_date(value) -> Optional[dt.date]:
     return None
 
 
+_MONTHS = {m: i + 1 for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+)}
+_DATE_WITH_YEAR = re.compile(r"(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\s+(\d{4})")
+_DATE_NO_YEAR = re.compile(r"\bon\s+(\d{1,2})\s+(" + "|".join(_MONTHS) + r")\b")
+
+
+def _parse_citation(text: str) -> tuple[Optional[str], Optional[dt.date]]:
+    """Pull the REAL ledger name and date a "found" verdict cites, out of its own free text --
+    e.g. "Yes -- Owner A Drawings (8 Apr 2024)" -> ("Owner A Drawings", 2024-04-08); "... shows
+    this narration against a $4,985.12 payment on 5 Jun (which was inv 2272)" -> ("Related Party
+    JE", date inferred from FY context since no year is given).
+
+    Without this, matched_ledger/matched_date were defaulting to the SEED TAB'S OWN NAME and the
+    TRANSACTION'S OWN DATE -- which is not what was matched, it's just where the note lives and
+    when the original line happened. Confirmed wrong on two real lines: Haper showed 17 May (the
+    transaction date) when the journal entry is dated 5 Jun; WOTSO showed 3 Jun (the transaction
+    date) when the GST listing entry is dated 4 Jun."""
+    if not text:
+        return None, None
+
+    m = _DATE_WITH_YEAR.search(text)
+    if m:
+        day, mon, year = m.group(1), m.group(2), m.group(3)
+        try:
+            date = dt.date(int(year), _MONTHS[mon], int(day))
+        except ValueError:
+            date = None
+    else:
+        m2 = _DATE_NO_YEAR.search(text)
+        if m2:
+            day, mon = m2.group(1), m2.group(2)
+            # No year given -- infer from the FY2023/24 window (1 Jul 2023 - 30 Jun 2024).
+            year = 2023 if _MONTHS[mon] >= 7 else 2024
+            try:
+                date = dt.date(year, _MONTHS[mon], int(day))
+            except ValueError:
+                date = None
+        else:
+            date = None
+
+    cleaned = re.sub(r"^(Yes|No|Not checked)\s*[—-]\s*", "", text, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^LABEL MISMATCH\s*[—-]\s*", "", cleaned, flags=re.IGNORECASE).strip()
+    # Cut at whichever separator occurs EARLIEST in the string, not the first one in preference
+    # order -- "Related Party JE shows this narration against ... (which was inv 2272)" has both
+    # " shows" and " (" in it, and " (" being checked first in a fixed order cut nothing at all
+    # (it matched the LATER "(which..." parenthetical, keeping the whole sentence). Found on real
+    # output: Haper's matched_ledger was the entire sentence instead of "Related Party JE".
+    indices = [cleaned.find(sep) for sep in (" (", " shows", " in FY")]
+    positive = [i for i in indices if i > 0]
+    if positive:
+        cleaned = cleaned[: min(positive)]
+    ledger = cleaned.strip() or None
+    return ledger, date
+
+
 def _load_batch1_review(ws) -> list[SeedEntry]:
     """Columns: Date, Amount, Xero shows, Bank narration, Already in Chequers FY23/24 ledgers?,
     Suggested action, Rimal notes."""
@@ -67,12 +124,23 @@ def _load_batch1_review(ws) -> list[SeedEntry]:
         else:
             verdict = "UNVERIFIED"
 
+        # Only a genuine finding (FOUND / LABEL_MISMATCH) cites a real ledger + date -- a
+        # NOT_FOUND/UNVERIFIED row has nothing to cite, and must not carry one just because this
+        # tab happens to have a row about the line.
+        matched_ledger, matched_date = None, None
+        if verdict == "FOUND":
+            matched_ledger, matched_date = _parse_citation(in_ledgers_text)
+        elif verdict == "LABEL_MISMATCH":
+            matched_ledger, matched_date = _parse_citation(in_ledgers_text)
+
         entries.append(
             SeedEntry(
                 date=_to_date(date_val),
                 amount=float(amount),
                 source_tab="Batch 1 Review",
                 verdict=verdict,
+                matched_ledger=matched_ledger,
+                matched_date=matched_date,
                 matched_description=f"{xero_shows} | {in_ledgers_text}" if in_ledgers_text else xero_shows,
                 detail=suggested_text or in_ledgers_text,
             )
@@ -118,15 +186,21 @@ def _load_dennis_transfers(ws) -> list[SeedEntry]:
         if len(row) < 8 or row[1] is None:
             continue
         date_val, amount, bank_narration = row[0], row[1], row[2]
+        ledger_line_matched = row[5]
         narration_suggests = row[6]
         rimal_answer = row[7]
         verdict = "FOUND" if (rimal_answer and str(rimal_answer).strip()) else "UNVERIFIED"
+        matched_ledger, matched_date = (
+            _parse_citation(str(ledger_line_matched)) if verdict == "FOUND" else (None, None)
+        )
         entries.append(
             SeedEntry(
                 date=_to_date(date_val),
                 amount=float(amount),
                 source_tab="Dennis Transfers FY23-24",
                 verdict=verdict,
+                matched_ledger=matched_ledger,
+                matched_date=matched_date,
                 matched_description=str(narration_suggests or ""),
                 detail=str(bank_narration or ""),
             )

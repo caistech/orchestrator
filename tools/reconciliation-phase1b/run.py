@@ -12,6 +12,7 @@ import os
 import sys
 from typing import Optional
 
+import answers
 import config
 import dedupe
 import fy2324_match
@@ -101,6 +102,7 @@ def process_line(
     seed: list[fy2324_match.SeedEntry],
     history: list[fy2425_propose.CodingExample],
     chart: list[fy2425_propose.ChartAccount],
+    confirmed_answers: Optional[dict] = None,
 ) -> ReconLine:
     line_date = line["date"]
     amount = line["amount"]
@@ -117,6 +119,7 @@ def process_line(
     merchant = ""
     rule_flags = rules.RuleFlags()
     match_text_for_rules = xero_desc
+    funding_pair_id = None
 
     if line_date is not None:
         match = narration.find_narration(csv_rows, amount, line_date)
@@ -135,9 +138,22 @@ def process_line(
             category=bank_category, merchant_name=merchant, processed_on=None, source_file="xero",
         )
         is_transfer = transfers.is_internal_transfer(fake_row)
-        rule_flags = rules.apply_hard_rules(fake_row, is_transfer)
+
+        if is_transfer:
+            # A transfer is money movement, not a cost -- it must NEVER inherit a cost-type flag
+            # (RELATED_PARTY_REVIEW, ATO_ICA, GST rules) just because its own NAB memo happens to
+            # mention what it was raised for ("Arb GLN", "ATO GST MAY 2024"). That substance
+            # belongs to the payment it funded, not to this credit line (found on real output:
+            # a $866.25 CREDIT was flagged RELATED_PARTY_REVIEW and routed to Ken, when the actual
+            # related-party item is the Hewson Timber PAYMENT it funded, on a different line).
+            pass_through = transfers.find_pass_through(csv_rows, match.row) if match.row else None
+            if pass_through:
+                funding_pair_id = pass_through.counterpart.transaction_details
+        else:
+            rule_flags = rules.apply_hard_rules(fake_row, is_transfer)
     else:
         is_transfer = False
+        pass_through = None
 
     fy = "FY2023/24" if (line_date is None or config.is_fy2324(line_date)) else "FY2024/25"
 
@@ -150,17 +166,47 @@ def process_line(
         # transfer (Step 2) -> LINKED_ACCOUNT").
         action = "LINKED_ACCOUNT"
         confidence = "High"
-        propose_rationale = "NAB-categorised internal transfer — the linked NAB account, never income or expense."
+        proposed_account = "Linked NAB account (bank/clearing) — not income"
+        rule_flags = rules.RuleFlags(flags=["LINKED_ACCOUNT"])
+        if funding_pair_id:
+            propose_rationale = (
+                f"NAB-categorised internal transfer — the linked NAB account, never income or "
+                f"expense. Funds: {funding_pair_id} — check THAT payment's own treatment "
+                f"separately; this transfer itself is not the cost."
+            )
+        else:
+            propose_rationale = (
+                "NAB-categorised internal transfer — the linked NAB account, never income or "
+                "expense. No same-day counterpart found."
+            )
     elif fy == "FY2023/24":
         match_result = fy2324_match.match_fy2324(seed, amount, line_date) if line_date else None
         action = match_result.action if match_result else "FY24_UNRECORDED"
         if match_result and match_result.matches:
-            best = match_result.matches[0]
-            matched_ledger = best.source_tab
-            matched_date = best.date
+            # Only a genuine citation (MATCH_EXISTING / MATCH_CHECK_LABEL) may show a
+            # matched_ledger/matched_date -- these must come from the seed entry's OWN parsed
+            # citation, never the seed tab's own name or the transaction's own date. Confirmed
+            # wrong on real output: every "match" cited "Batch 1 Review" (our own analysis tab,
+            # not Chequers' ledger) with a date that was just the transaction's own date copied
+            # across (Haper showed the transaction date 17 May when the real JE is dated 5 Jun).
+            candidates_with_citation = [m for m in match_result.matches if m.matched_ledger]
+            best = candidates_with_citation[0] if candidates_with_citation else match_result.matches[0]
+            if action in ("MATCH_EXISTING", "MATCH_CHECK_LABEL"):
+                matched_ledger = best.matched_ledger
+                matched_date = best.matched_date
             matched_description = best.matched_description
         confidence = "High" if action == "MATCH_EXISTING" else "Medium" if action in ("MATCH_UNVERIFIED", "MATCH_CHECK_LABEL") else "Low"
         propose_rationale = "FY2023/24 — match only, never a fresh proposal."
+        # A descriptive label, not a Xero account CODE, and never written anywhere (this tool has
+        # no write path at all) -- but where the treatment genuinely IS known, showing it beats
+        # leaving the column blank next to a confident verdict. Only set where something is
+        # actually known; MATCH_UNVERIFIED stays blank rather than guessing.
+        if "GST_FREE_INTERNATIONAL_TRAVEL" in rule_flags.flags:
+            proposed_account, proposed_tax = "Travel - International", "GST Free Expenses"
+        elif action == "MATCH_EXISTING":
+            proposed_account = "As coded by Chequers"
+        elif action == "FY24_UNRECORDED" and "DIRECTOR_LOAN_REVIEW" in rule_flags.flags:
+            proposed_account = "Owner A Drawings"
     else:
         proposal = fy2425_propose.propose(match_text_for_rules, line["contact_name"], history, chart)
         proposed_account, proposed_tax = proposal.account_code, proposal.tax_type
@@ -172,6 +218,23 @@ def process_line(
 
     question, owner = _question_for(action, flags)
 
+    # Point 1 -- an already-confirmed answer overrides the mechanical result and clears the
+    # question. Without this, a re-run re-asks a question that was already answered in a real
+    # conversation (found reviewing the corrected Batch 1 output: Napa/Santa Rosa still asked
+    # "which entry", and the $280/$500 lines still asked whether a receipt existed, despite both
+    # having been answered directly).
+    answer = (confirmed_answers or {}).get(line["id"])
+    if answer:
+        if answer.action:
+            action = answer.action
+        if answer.proposed_account:
+            proposed_account = answer.proposed_account
+        if answer.proposed_tax_type:
+            proposed_tax = answer.proposed_tax_type
+        confirmed_note = f"CONFIRMED ({answer.answered_by}): {answer.note}" if answer.note else f"Confirmed by {answer.answered_by}."
+        rationale = f"{confirmed_note} {rationale}".strip()
+        question = ""
+
     return ReconLine(
         xero_line_id=line["id"],
         date=line_date,
@@ -182,6 +245,7 @@ def process_line(
         bank_narration=bank_narration_text,
         bank_category=bank_category,
         merchant=merchant,
+        funding_pair_id=funding_pair_id,
         action=action,
         proposed_account=proposed_account,
         proposed_tax_type=proposed_tax,
@@ -214,8 +278,10 @@ def main():
     chart = fy2425_propose.fetch_chart_of_accounts(token, config.XERO_ORG_TENANT_ID)
     raw_history = fy2425_propose.fetch_coding_history(token, config.XERO_ORG_TENANT_ID)
     history = fy2425_propose.enrich_with_bank_narration(raw_history, csv_rows)
+    confirmed_answers = answers.load_answers()
+    print(f"{len(confirmed_answers)} confirmed answer(s) loaded from {answers.ANSWERS_PATH}.")
 
-    recon_lines = [process_line(l, csv_rows, seed, history, chart) for l in all_lines]
+    recon_lines = [process_line(l, csv_rows, seed, history, chart, confirmed_answers) for l in all_lines]
 
     dup_input = [{"id": l.xero_line_id, "amount": l.amount, "date": l.date} for l in recon_lines if l.date]
     dupes = dedupe.find_possible_duplicates(dup_input)
@@ -227,10 +293,17 @@ def main():
     fy2324_lines = sorted((l for l in recon_lines if l.fy == "FY2023/24"), key=lambda l: l.date or dt.date.min)
     fy2425_lines = sorted((l for l in recon_lines if l.fy == "FY2024/25"), key=lambda l: l.date or dt.date.min)
 
-    fy2324_with_proposal = [l for l in fy2324_lines if l.proposed_account]
-    assert not fy2324_with_proposal, (
-        f"ACCEPTANCE CRITERION VIOLATED: {len(fy2324_with_proposal)} FY2023/24 lines got a "
-        f"proposed_account — scope doc §8 requires zero."
+    # The real invariant (scope doc §8): the FY24/25 pattern-matching GUESS engine (Step 5) must
+    # never run against a lodged year. proposed_account itself is allowed to carry a descriptive
+    # label for FY2023/24 lines with a known treatment (e.g. "Linked NAB account", "Owner A
+    # Drawings") -- that's grounded in an actual determination, not a guess, and the reference
+    # correction Dennis produced by hand does exactly this. What must never happen is a FY2023/24
+    # line getting Step 5's PROPOSE_CODING/NO_CONFIDENT_PATTERN action, which only fy2425_propose
+    # can produce.
+    fy2324_guessed = [l for l in fy2324_lines if l.action in ("PROPOSE_CODING", "NO_CONFIDENT_PATTERN")]
+    assert not fy2324_guessed, (
+        f"ACCEPTANCE CRITERION VIOLATED: {len(fy2324_guessed)} FY2023/24 lines went through the "
+        f"FY2024/25 coding-proposal engine — scope doc §8 requires zero."
     )
 
     os.makedirs("output", exist_ok=True)

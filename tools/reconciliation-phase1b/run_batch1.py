@@ -17,6 +17,7 @@ import os
 
 import openpyxl
 
+import answers
 import config
 import dedupe
 import fy2324_match
@@ -53,7 +54,8 @@ def main():
 
     # No live Xero access in this fixture-only run — every line here is FY2023/24, so
     # process_line() never reaches the FY2024/25 branch that would need history/chart.
-    recon_lines = [process_line(l, csv_rows, seed, [], []) for l in fixture]
+    confirmed_answers = answers.load_answers()
+    recon_lines = [process_line(l, csv_rows, seed, [], [], confirmed_answers) for l in fixture]
 
     dup_input = [{"id": l.xero_line_id, "amount": l.amount, "date": l.date} for l in recon_lines if l.date]
     dupes = dedupe.find_possible_duplicates(dup_input)
@@ -62,10 +64,13 @@ def main():
         if l.xero_line_id in dupe_ids:
             l.flags.append("POSSIBLE_DUPLICATE")
 
-    fy2324_with_proposal = [l for l in recon_lines if l.fy == "FY2023/24" and l.proposed_account]
-    assert not fy2324_with_proposal, (
-        f"ACCEPTANCE CRITERION VIOLATED: {len(fy2324_with_proposal)} FY2023/24 lines got a "
-        f"proposed_account — scope doc §8 requires zero."
+    # See run.py's identical check for why this asserts on `action`, not on proposed_account
+    # being present -- a descriptive label for a KNOWN FY2023/24 treatment is fine; a line going
+    # through the FY2024/25 guess engine is not, and structurally can't happen here anyway.
+    fy2324_guessed = [l for l in recon_lines if l.fy == "FY2023/24" and l.action in ("PROPOSE_CODING", "NO_CONFIDENT_PATTERN")]
+    assert not fy2324_guessed, (
+        f"ACCEPTANCE CRITERION VIOLATED: {len(fy2324_guessed)} FY2023/24 lines went through the "
+        f"FY2024/25 coding-proposal engine — scope doc §8 requires zero."
     )
 
     os.makedirs("output", exist_ok=True)

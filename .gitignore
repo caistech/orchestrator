@@ -20,3 +20,11 @@ next-env.d.ts
 # typecheck. Tracked by accident; it is not source and its diffs are noise.
 tsconfig.tsbuildinfo
 *.tsbuildinfo
+
+# Phase 1b local reconciliation tool — real bank/ledger data and generated reports never committed
+# (financial exports/PII, same discipline as DB dumps — see PRODUCT_STANDARDS.md).
+tools/reconciliation-phase1b/data/
+tools/reconciliation-phase1b/output/
+tools/reconciliation-phase1b/*.xlsx
+__pycache__/
+*.pyc

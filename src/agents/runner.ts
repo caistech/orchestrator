@@ -315,7 +315,11 @@ export async function runAgentTask(ctx: RunContext): Promise<RunResult> {
     const outputTokens = json?.usage?.completion_tokens ?? 0;
 
     // Approximate cost: gpt-4.1-mini at ~$0.15/1M input, ~$0.60/1M output (AUD approximation).
-    const estimatedCost = (inputTokens * 0.00015 + outputTokens * 0.0006);
+    // Per-token, not per-1k: $0.15/1,000,000 = $0.00000015/token (previously off by 1000x — a real
+    // ~$0.0023 call was reported as $2.35 and wrongly tripped the cap. Found 2026-09-27 on the
+    // first live reconciliation_agent run: 18 lines, 1 iteration, "exceeded maxCost $0.25 (spent
+    // $2.3491)" — the actual OpenAI spend for that call was three orders of magnitude smaller.
+    const estimatedCost = (inputTokens * 0.00000015 + outputTokens * 0.0000006);
     totalCost += estimatedCost;
 
     if (totalCost > agent.maxCost) {
